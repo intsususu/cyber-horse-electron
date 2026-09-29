@@ -151,12 +151,14 @@ export class TaskJournal {
     this.identity = { ino: now.ino, dev: now.dev }
   }
 
-  private async exclusive<T>(action: () => Promise<T>): Promise<T> {
+  private async exclusive<T>(action: () => Promise<T>, name = '写入锁.json'): Promise<T> {
     await this.checkIdentity()
-    const path = join(this.directory, '写入锁.json')
+    const path = join(this.directory, name)
     const lock = await open(path, 'wx').catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'EEXIST')
-        throw new Error('任务记录正在写入或存在中断写入锁，请先核对，未自动接管。')
+        throw new Error(
+          `任务被占用或存在中断${name === '写入锁.json' ? '写入锁' : '执行锁'}，请先核对，未自动接管。`,
+        )
       throw error
     })
     const owned = await lock.stat()
@@ -174,6 +176,11 @@ export class TaskJournal {
         throw new Error('任务写入锁已变化，未移除未知文件。')
       await unlink(path)
     }
+  }
+
+  /** 执行锁覆盖文件移动及工具调用，不仅保护某一次记录写入。 */
+  async runExclusive<T>(action: () => Promise<T>): Promise<T> {
+    return this.exclusive(action, '执行锁.json')
   }
 
   async create(value: TaskManifest): Promise<TaskManifest> {

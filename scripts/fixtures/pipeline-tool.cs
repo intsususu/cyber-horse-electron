@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
 
@@ -23,7 +24,7 @@ class PipelineTool {
       Environment.Exit(103);
     }
     if (args.Contains("--help")) {
-      Console.WriteLine("--sub_formats --audio_suffixes --device --identify --output --input --post-export-action --post-export-video-command --cli --config-override --local-config-file -show_format -show_streams");
+      Console.WriteLine("--sub_formats --audio_suffixes --device --output_dir --identify --output --input --working-directory --post-export-action --post-export-video-command --cli --config-override --local-config-file -show_format -show_streams");
       return;
     }
     File.AppendAllText(Path.Combine(home, "calls.jsonl"), new JavaScriptSerializer().Serialize(args) + "\n", Encoding.UTF8);
@@ -42,7 +43,8 @@ class PipelineTool {
     if (args.Contains("--sub_formats")) {
       Progress(home, "vad", "VAD进度：1/4 块（25.0%）在 cuda 上");
       Progress(home, "transcribe", "[00:00.00 --> 00:05.00] 中文识别替身");
-      File.WriteAllText(Path.ChangeExtension(args.Last(), ".srt"), "1\n00:00:00,500 --> 00:00:01,500\n中文测试字幕\n", new UTF8Encoding(false));
+      string subtitle = args.Contains("--output_dir") ? Path.Combine(Value(args, "--output_dir"), Path.GetFileNameWithoutExtension(args.Last()) + ".srt") : Path.ChangeExtension(args.Last(), ".srt");
+      File.WriteAllText(subtitle, "1\n00:00:00,500 --> 00:00:01,500\n中文测试字幕\n", new UTF8Encoding(false));
     } else if (args.Contains("-o")) {
       if (!args.Contains("--gui-mode")) Environment.Exit(12);
       Progress(home, "mux", "#GUI#progress 100%");
@@ -60,7 +62,10 @@ class PipelineTool {
       Directory.CreateDirectory(output);
       foreach (string path in Directory.GetFiles(input).Where(x => x == video || x.StartsWith(Path.Combine(input, Path.GetFileNameWithoutExtension(video) + "."))))
         File.Copy(path, Path.Combine(output, Path.GetFileName(path)), false);
-      File.WriteAllText(Path.Combine(output, Path.GetFileNameWithoutExtension(video) + ".nfo"), "<movie><title>隔离测试</title></movie>", new UTF8Encoding(false));
+      string stem = Path.GetFileNameWithoutExtension(video);
+      string tags = (Regex.IsMatch(stem, @"-(C|UC)(_\d+)?$", RegexOptions.IgnoreCase) ? "<tag>中文字幕</tag>" : "") +
+        (Regex.IsMatch(stem, @"-(U|UC|hack)(_\d+)?$", RegexOptions.IgnoreCase) ? "<tag>破解</tag>" : "");
+      File.WriteAllText(Path.Combine(output, stem + ".nfo"), "<movie><title>隔离测试</title>" + (mode == "丢标签" ? "" : tags) + "</movie>", new UTF8Encoding(false));
       File.WriteAllText(Path.Combine(output, "poster.jpg"), "测试封面替身");
     }
     Console.WriteLine("替身处理完成，token=不应显示");

@@ -19,6 +19,7 @@ import {
   unchanged,
 } from './safe-files'
 import { canonicalVideoName } from './video-name'
+import { mediaIdentity } from './media-identity'
 import { TaskJournal, writeTaskJson } from './task-journal'
 
 export type WorkspaceDraft = {
@@ -112,6 +113,7 @@ export class TaskWorkspaces {
         if (isInternalMediaPath(source) || !allowed.some((root) => inside(root, source)))
           throw new Error('任务来源超出已保存目录或位于内部工作目录。')
         const originalStem = basename(source, extname(source))
+        const identity = mediaIdentity(source)
         const canonical = /(?:-CD\d+|-part\d+)/i.test(originalStem)
           ? null
           : canonicalVideoName(originalStem)
@@ -150,8 +152,8 @@ export class TaskWorkspaces {
           directory,
           sources,
           marks: {
-            chinese: mark(/-(?:C|UC)(?:_\d+)?$/i.test(originalStem)),
-            restored: mark(/-(?:U|UC)(?:_\d+)?$/i.test(originalStem)),
+            chinese: mark(identity.chinese),
+            restored: mark(identity.restored),
           },
           steps: draft.steps.map((step) => ({
             id: step,
@@ -159,6 +161,9 @@ export class TaskWorkspaces {
             startedAt: null,
             endedAt: null,
             message: '',
+            inputVideo: null,
+            outputVideo: null,
+            outputFiles: [],
           })),
           artifacts: [],
         })
@@ -211,7 +216,7 @@ export class TaskWorkspaces {
   ): Promise<TaskManifest> {
     return this.serial(async () => {
       checkpoint(signal)
-      const journal = await this.journal(directory, taskId)
+      const journal = await this.openJournal(directory, taskId)
       const current = await journal.read()
       if (current.snapshotNeedsRepair) throw new Error('任务快照需要确认修复，未移动文件。')
       if (!['queued', 'running'].includes(current.task.state))
@@ -264,7 +269,7 @@ export class TaskWorkspaces {
     })
   }
 
-  private async journal(directory: string, id: string): Promise<TaskJournal> {
+  async openJournal(directory: string, id: string): Promise<TaskJournal> {
     const roots = await this.registeredRoots()
     const canonical = await checkDirectory(directory)
     if (

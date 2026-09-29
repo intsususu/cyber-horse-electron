@@ -4,8 +4,8 @@ export function canonicalVideoName(input: string): string | null {
     .trim()
     .replace(/[._-]?restored$/i, '')
     .replace(/^.*@(?=[a-z]{2,6}-\d{2,6})/i, '')
-  const match = /([a-z]{2,6})-?([0-9]{2,6})(?:[-_. ]?(UC|U|C))?/i.exec(normalized)
+  const match = /([a-z]{2,6})-?([0-9]{2,6})(?:[-_. ]?(UC|U|C|hack))?/i.exec(normalized)
   return match
-    ? `${match[1]!.toUpperCase()}-${match[2]}${match[3] ? `-${match[3].toUpperCase()}` : ''}`
+    ? `${match[1]!.toUpperCase()}-${match[2]}${match[3] ? `-${match[3].toUpperCase() === 'HACK' ? 'U' : match[3].toUpperCase()}` : ''}`
     : null
 }

@@ -131,12 +131,22 @@ async function fixture() {
         await fs.copyFile(join(inputDirectory, name), join(mediaOutput, name))
       if (mode === 'MDC 移动') await fs.unlink(selectedInput)
       if (mode === '缺元数据') return success()
+      const tags = [
+        /-(?:C|UC)(?:_\d+)?$/i.test(stem) ? '<tag>中文字幕</tag>' : '',
+        /-(?:U|UC|hack)(?:_\d+)?$/i.test(stem) ? '<tag>破解</tag>' : '',
+      ].join('')
       await fs.writeFile(
         join(mediaOutput, basename(video, extname(video)) + '.nfo'),
-        mode === '坏元数据' ? '<movie></movie>' : '<movie><title>测试</title></movie>',
+        mode === '坏元数据'
+          ? '<movie></movie>'
+          : `<movie><title>测试</title>${mode === 'MDC丢标签' ? '' : tags}</movie>`,
       )
       await fs.writeFile(join(mediaOutput, 'poster.jpg'), '封面替身')
       if (mode === 'MDC改视频') await fs.writeFile(join(mediaOutput, video), '意外变化')
+      if (mode === 'MDC丢标记') {
+        await fs.rename(join(mediaOutput, video), join(mediaOutput, number + extname(video)))
+        await fs.rename(join(mediaOutput, stem + '.nfo'), join(mediaOutput, number + '.nfo'))
+      }
     }
     request.onLine?.('测试输出 token=不能写入日志', false)
     return success()
@@ -374,6 +384,22 @@ describe('四步处理与文件保护', () => {
     ).toBe('隔离的媒体替身')
     expect(await fs.readdir(f.settings.paths.mdcOutput)).toEqual([])
   })
+
+  it.each(['MDC丢标记', 'MDC丢标签'])(
+    'CLUB-494 重名尾缀场景在标记校验失败时禁止归档：%s',
+    async (mode) => {
+      const f = await fixture()
+      const original = join(f.settings.paths.preprocess, 'CLUB-494-UC_1.mkv')
+      await fs.rename(f.source, original)
+      f.mode(mode)
+      const result = await f.start(['scrape', 'archive'])
+      expect(result.status).toBe('failed')
+      expect(result.message).toMatch(/标记|标签/)
+      expect(await fs.readFile(original, 'utf8')).toBe('隔离的媒体替身')
+      expect(await fs.readdir(f.settings.paths.nas)).toEqual([])
+      expect(await fs.readdir(f.settings.paths.mdcOutput)).not.toHaveLength(0)
+    },
+  )
   it('MDC 单步搬回演员与番号目录，已有同名文件夹不被覆盖', async () => {
     const f = await fixture()
     f.mode('MDC 分层目录')

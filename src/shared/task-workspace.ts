@@ -75,7 +75,7 @@ export const taskArtifactSchema = z
   .object({
     path: taskRelativePathSchema,
     role: z.enum(['input', 'subtitle', 'output', 'temporary']),
-    state: z.enum(['reserved', 'verified', 'removed']),
+    state: z.enum(['reserved', 'verified', 'removing', 'removed']),
     stamp: taskFileStampSchema.nullable(),
     sha256: digest.nullable(),
   })
@@ -117,6 +117,9 @@ export const taskFileSchema = z
             startedAt: instant.nullable(),
             endedAt: instant.nullable(),
             message: z.string().max(2000),
+            inputVideo: taskRelativePathSchema.nullable().default(null),
+            outputVideo: taskRelativePathSchema.nullable().default(null),
+            outputFiles: z.array(taskRelativePathSchema).max(1000).default([]),
           })
           .strict(),
       )
@@ -130,6 +133,11 @@ export const taskFileSchema = z
     const paths = [
       ...file.sources.map((source) => source.target),
       ...file.artifacts.map((a) => a.path),
+      ...file.steps.flatMap((step) =>
+        [step.inputVideo, step.outputVideo, ...step.outputFiles].filter(
+          (path): path is string => path !== null,
+        ),
+      ),
     ]
     if (paths.some((path) => !path.toLowerCase().startsWith(prefix)))
       ctx.addIssue({ code: 'custom', message: '文件路径超出所属任务子目录' })

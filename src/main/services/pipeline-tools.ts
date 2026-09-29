@@ -11,11 +11,15 @@ import {
   checkpoint,
   exists,
   availablePath,
+  checkDirectory,
+  inside,
 } from './safe-files'
 import { runTool, type ProcessRunner, type ProcessResult, redactToolLine } from './tool-process'
 import { parseSrt, srtToAss } from './subtitles'
 import { checkWhisperSource, type CheckedFile } from './whisper-source'
 import { toolProgress, type ProgressReporter } from './tool-progress'
+import { mediaIdentity, verifyMediaIdentity, type MediaIdentity } from './media-identity'
+import { verifyMdcMetadata } from './mdc-metadata'
 
 export type ToolName = 'whisper' | 'mkvmerge' | 'jasna' | 'mdc' | 'ffprobe'
 export type CheckedTool = {
@@ -85,6 +89,7 @@ export class PipelineTools {
     settings: Settings,
     steps: PipelineStep[],
     signal: AbortSignal,
+    isolated = false,
   ): Promise<CheckedTools> {
     const tools: CheckedTools = {}
     for (const name of requiredTools(steps)) {
@@ -164,6 +169,10 @@ export class PipelineTools {
         )
       }
       const missing = capabilities[name].filter((flag) => !help.includes(flag))
+      if (isolated && name === 'whisper' && !help.includes('--output_dir'))
+        missing.push('--output_dir')
+      if (isolated && name === 'jasna' && !help.includes('--working-directory'))
+        missing.push('--working-directory')
       if (missing.length)
         throw new Error(`${toolLabels[name]} 命令行能力检测缺少参数：${missing.join('、')}。`)
       tools[name] = checked
@@ -305,11 +314,13 @@ export class PipelineTools {
     signal: AbortSignal,
     log: (line: string, warning?: boolean) => void,
     report: ProgressReporter = () => {},
+    subtitleDirectory?: string,
   ): Promise<string> {
     report({ phase: 'validate', percent: null })
     const inspection = await this.inspect(tools, input, signal)
     if (!inspection.audio) throw new Error('视频没有音轨，无法提取字幕。')
-    const srt = join(dirname(input), basename(input, extname(input)) + '.srt')
+    if (subtitleDirectory) await checkDirectory(subtitleDirectory)
+    const srt = join(subtitleDirectory ?? dirname(input), basename(input, extname(input)) + '.srt')
     report({ phase: 'transcribe', percent: null })
     if (!(await exists(srt)))
       await this.invoke(
@@ -324,6 +335,7 @@ export class PipelineTools {
           'cuda',
           '--log_level',
           'DEBUG',
+          ...(subtitleDirectory ? ['--output_dir', subtitleDirectory] : []),
           input,
         ],
         signal,
@@ -372,7 +384,7 @@ export class PipelineTools {
       await this.validateVideo(tools, input, output, signal, true)
       return subtitle
     } catch (error) {
-      if (format === 'ass' && (await exists(subtitle))) await unlink(subtitle)
+      if (!subtitleDirectory && format === 'ass' && (await exists(subtitle))) await unlink(subtitle)
       throw error
     }
   }
@@ -383,10 +395,12 @@ export class PipelineTools {
     signal: AbortSignal,
     log: (line: string, warning?: boolean) => void,
     report: ProgressReporter = () => {},
+    workspace?: { restored: string; workingDirectory: string },
   ): Promise<void> {
     report({ phase: 'validate', percent: null })
     const before = await this.inspect(tools, input, signal)
-    const restored = output + '.jasna.mkv'
+    const restored = workspace?.restored ?? output + '.jasna.mkv'
+    if (workspace) await checkDirectory(workspace.workingDirectory)
     report({ phase: 'restore', percent: null })
     await this.invoke(
       tools,
@@ -397,7 +411,7 @@ export class PipelineTools {
         '--output',
         restored,
         '--working-directory',
-        dirname(output),
+        workspace?.workingDirectory ?? dirname(output),
         '--post-export-action',
         'none',
         '--post-export-command',
@@ -436,7 +450,7 @@ export class PipelineTools {
     )
     report({ phase: 'validate', percent: null })
     await this.validateVideo(tools, input, output, signal, before.chinese)
-    await unlink(restored)
+    if (!workspace) await unlink(restored)
   }
   async scrape(
     tools: CheckedTools,
@@ -444,11 +458,22 @@ export class PipelineTools {
     outputDirectory: string,
     signal: AbortSignal,
     log: (line: string, warning?: boolean) => void,
+    expected: MediaIdentity = mediaIdentity(input),
+    companions: string[] = [],
   ): Promise<string[]> {
     const sourceDirectory = dirname(input)
     if (/[;=\r\n]/.test(sourceDirectory + outputDirectory))
       throw new Error('MDC 目录不能包含分号、等号或换行，请更换目录。')
     const expectedHash = await hashFile(input, signal)
+    const subtitles: { extension: string; hash: string }[] = []
+    for (const path of companions) {
+      if (dirname(path) !== sourceDirectory) throw new Error('MDC 关联输入不在同一目录。')
+      if (/\.(srt|ass|vtt)$/i.test(path))
+        subtitles.push({
+          extension: extname(path).toLowerCase(),
+          hash: await hashFile(path, signal),
+        })
+    }
     const previous = new Map<string, FileStamp>()
     for (const path of await listFiles(outputDirectory, signal)) {
       previous.set(path, await fileStamp(path))
@@ -482,15 +507,14 @@ export class PipelineTools {
     )
     if (videos.length !== 1 || (await hashFile(videos[0]!, signal)) !== expectedHash)
       throw new Error('MDC 没有生成唯一且完整的视频产物，请核对源目录与输出目录。')
+    verifyMediaIdentity(videos[0]!, expected)
+    if (files.some((path) => !inside(dirname(videos[0]!), path)))
+      throw new Error('MDC 产物分散在多个目录，未提交输出。')
     const nfo = join(dirname(videos[0]!), basename(videos[0]!, extname(videos[0]!)) + '.nfo')
     if (!files.includes(nfo) || (await fileStamp(nfo)).size > 2 * 1024 * 1024)
       throw new Error('MDC 缺少配套元数据文件或文件过大。')
     const text = new TextDecoder('utf-8', { fatal: true }).decode(await readFile(nfo))
-    if (
-      /<!DOCTYPE|<!ENTITY/i.test(text) ||
-      !/<movie(?:\s[^>]*)?>[\s\S]*<title>[^<]+<\/title>[\s\S]*<\/movie>\s*$/i.test(text.trim())
-    )
-      throw new Error('MDC 元数据内容无效，未提交输出。')
+    verifyMdcMetadata(text, expected)
     if (
       !files.some(
         (path) => /\.(jpe?g|png|webp)$/i.test(path) && /poster|thumb|fanart/i.test(basename(path)),
@@ -499,6 +523,15 @@ export class PipelineTools {
       throw new Error('MDC 未生成封面资源，未提交输出。')
     for (const path of files)
       if (!(await fileStamp(path)).size) throw new Error('MDC 存在空的输出文件，未提交。')
+    for (const subtitle of subtitles) {
+      let retained = false
+      for (const path of files.filter((path) => extname(path).toLowerCase() === subtitle.extension))
+        if ((await hashFile(path, signal)) === subtitle.hash) {
+          retained = true
+          break
+        }
+      if (!retained) throw new Error('MDC 产物缺少原有字幕或字幕内容发生变化，未提交输出。')
+    }
     return files
   }
 }

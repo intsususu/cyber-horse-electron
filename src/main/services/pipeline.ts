@@ -12,6 +12,7 @@ import {
 } from '../../shared/pipeline'
 import { collectMediaInputs, mediaExtensions } from './media-inputs'
 import { canonicalVideoName } from './video-name'
+import { mediaIdentity } from './media-identity'
 import { ExecutionLock } from './execution-lock'
 import {
   PipelineTools,
@@ -55,15 +56,17 @@ const timestamp = () => new Date().toISOString()
 const settingsKey = (settings: Settings) =>
   JSON.stringify({ paths: settings.paths, subtitle: settings.subtitle })
 const isVideo = (path: string) => mediaExtensions.includes(extname(path).slice(1).toLowerCase())
-const isChinese = (path: string) => /-(?:C|UC)(?:_\d+)?$/i.test(basename(path, extname(path)))
-const isRestored = (path: string) => /-(?:U|UC)(?:_\d+)?$/i.test(basename(path, extname(path)))
+const isChinese = (path: string) => mediaIdentity(path).chinese
+const isRestored = (path: string) => mediaIdentity(path).restored
 const archiveNumber = (path: string) =>
   canonicalVideoName(basename(path, extname(path)))?.replace(/-(?:UC|U|C)$/i, '')
 function namedOutput(path: string, step: 'subtitle-mux' | 'video'): string {
   const name = basename(path, extname(path))
   if (step === 'subtitle-mux')
     return (
-      (/-U(?:_\d+)?$/i.test(name) ? name.replace(/-U(_\d+)?$/i, '-UC$1') : name + '-C') + '.mkv'
+      (/-(?:U|hack)(?:_\d+)?$/i.test(name)
+        ? name.replace(/-(?:U|hack)(_\d+)?$/i, '-UC$1')
+        : name + '-C') + '.mkv'
     )
   return (/-C(?:_\d+)?$/i.test(name) ? name.replace(/-C(_\d+)?$/i, '-UC$1') : name + '-U') + '.mkv'
 }
@@ -648,6 +651,8 @@ export class PipelineService {
                   if (warning) console.warn(redactToolLine(line))
                   else console.log(redactToolLine(line))
                 },
+                undefined,
+                item.files.filter((path) => path !== item.video),
               )
               const video = produced.find(isVideo)!
               if (!video || produced.some((path) => !inside(plan.roots.scrape!, path)))

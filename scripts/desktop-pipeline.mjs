@@ -393,6 +393,30 @@ export async function verifyPipeline(app, page, output) {
     await expect(page.locator('.input-file-row').filter({ hasText: 'LIVE-002-U.mkv' })).toHaveCount(
       1,
     )
+    // MDC 零退出码却丢失标签时，经真实 IPC 阻止归档，不删除输入。
+    await writeFile(media('CLUB-494-UC_1.mkv'), original)
+    await writeFile(join(toolDirectory, 'mode.txt'), '丢标签')
+    await run('刷新')
+    await selectOnly('CLUB-494-UC_1.mkv')
+    for (const step of stepNames) {
+      if (step === '元数据刮削' || step === '归档到 NAS') await choice(step).check()
+      else await choice(step).uncheck()
+    }
+    await run('运行所选 2 步')
+    await run('确认运行所选步骤')
+    await expect
+      .poll(async () => (await page.evaluate(() => window.cyberHorse.getPipelineState())).status, {
+        timeout: 15000,
+      })
+      .toBe('failed')
+    await run('任务队列')
+    await page.getByRole('tab', { name: /^未完成/ }).click()
+    await expect(
+      page.locator('.task-row').filter({ has: page.locator('.task-status.failed') }),
+    ).toContainText('缺少任务要求的中文字幕或破解标签')
+    expect(await readFile(media('CLUB-494-UC_1.mkv'), 'utf8')).toBe(original)
+    const rejected = await page.evaluate(() => window.cyberHorse.getPipelineState())
+    expect(rejected.tasks.find((task) => task.id === 'archive').status).toBe('skipped')
     await writeFile(
       join(output, 'pipeline-desktop-result.json'),
       JSON.stringify(
@@ -409,6 +433,7 @@ export async function verifyPipeline(app, page, output) {
           toolProgress: true,
           progressReload: true,
           refreshAfterEachFile: true,
+          mdcMarksBlocked: true,
         },
         null,
         2,
