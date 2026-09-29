@@ -59,7 +59,7 @@ export async function checkDirectory(path: string): Promise<string> {
 export async function safeRoot(path: string, protectedPaths: string[]): Promise<string> {
   const root = await checkDirectory(path)
   if (root.split(sep).some(isInternalMediaEntry))
-    throw new Error('不能把旧版本遗留目录用作处理范围。')
+    throw new Error('不能把任务工作目录或旧版本遗留目录用作处理范围。')
   if (pathKey(root) === pathKey(parse(root).root) || inside(root, homedir()))
     throw new Error('不能处理磁盘根目录或用户根目录。')
   for (const protectedPath of [

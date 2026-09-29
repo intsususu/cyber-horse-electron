@@ -329,6 +329,23 @@ describe('提取清理并重命名', () => {
     expect(await fs.readFile(join(old, '旧文件.txt'), 'utf8')).toBe('历史文件')
     expect((await fs.stat(partial)).size).toBe(100)
   })
+  it('整个 .work 排除提取和残留清理，不能把任务子目录配置为处理根', async () => {
+    const { paths, service } = await fixture()
+    const work = join(paths.download, '.work', '中断任务')
+    await fs.mkdir(work, { recursive: true })
+    await fs.writeFile(join(work, 'ABC-123-C.mkv'), Buffer.alloc(128))
+    await fs.writeFile(join(work, '任务状态.json'), '{}')
+    const plan = await service.preview(paths)
+    expect(plan.items.some((item) => item.source.includes('.work'))).toBe(false)
+    expect(plan.cleanupDirectories.some((path) => path.includes('.work'))).toBe(false)
+    await service.start(plan.id, paths)
+    await service.wait()
+    expect(service.snapshot()?.status).toBe('succeeded')
+    expect(await fs.readFile(join(work, 'ABC-123-C.mkv'))).toEqual(Buffer.alloc(128))
+    expect(await fs.readFile(join(work, '任务状态.json'), 'utf8')).toBe('{}')
+    await expect(service.preview({ ...paths, download: work })).rejects.toThrow('任务工作目录')
+    await expect(service.preview({ ...paths, preprocess: work })).rejects.toThrow('任务工作目录')
+  })
 
   it('快速移动提交前取消会清理自己的临时目录项并保留源文件', async () => {
     const { paths, service, source } = await fixture()

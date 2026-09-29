@@ -5,6 +5,7 @@ import { verifyEnvironmentRecovery, verifyInitialEnvironment } from './desktop-e
 import { verifyPreparation } from './desktop-preparation.mjs'
 import { verifyPipeline } from './desktop-pipeline.mjs'
 import { verifyMediaLibrary } from './desktop-media-library.mjs'
+import { verifySingleInstance } from './desktop-single-instance.mjs'
 
 const output = resolve('test-results')
 await mkdir(output, { recursive: true })
@@ -85,6 +86,7 @@ async function checkLayout(page, label) {
 }
 try {
   let page = await launch()
+  await verifySingleInstance(app, environment)
   await verifyInitialEnvironment(page)
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'eva')
   const security = await app.evaluate(({ BrowserWindow }) => {

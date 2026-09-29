@@ -52,7 +52,16 @@ protocol.registerSchemesAsPrivileged([
 ])
 if (process.env.CYBER_HORSE_DATA_DIR && !app.isPackaged)
   app.setPath('userData', process.env.CYBER_HORSE_DATA_DIR)
+// 同一应用数据目录只允许一个后台，避免重复执行或同时接管中断任务。
+const primaryInstance = app.requestSingleInstanceLock()
+if (!primaryInstance) app.quit()
 let mainWindow: BrowserWindow | null = null
+app.on('second-instance', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+})
 let settingsStore: SettingsStore
 let stopWatchingSettings: (() => void) | undefined
 const devUrl = !app.isPackaged ? process.env.ELECTRON_RENDERER_URL : undefined
@@ -162,6 +171,7 @@ function createWindow(): void {
 }
 
 void app.whenReady().then(async () => {
+  if (!primaryInstance) return
   const store = new SettingsStore(app.getPath('userData'))
   settingsStore = store
   const executionLock = new ExecutionLock()

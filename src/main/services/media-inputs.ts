@@ -1,7 +1,8 @@
 import { lstat, opendir, access } from 'node:fs/promises'
-import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { InputSelection, MediaFile } from '../../shared/contracts'
-import { isInternalMediaEntry } from '../../shared/media-files'
+import { isInternalMediaEntry, isInternalMediaPath } from '../../shared/media-files'
+import { checkDirectory } from './safe-files'
 
 export const mediaExtensions = [
   'mp4',
@@ -30,6 +31,8 @@ export async function collectMediaInputs(
 ): Promise<InputSelection> {
   if (!paths.length || paths.some((path) => !isAbsolute(path) || path.includes('\0')))
     throw new Error('请选择有效的绝对路径')
+  if (paths.some(isInternalMediaPath))
+    throw new Error('任务工作目录和历史内部文件不能作为普通媒体输入。')
   const root = directory ? resolve(paths[0]!) : null
   const files: MediaFile[] = []
   const seen = new Set<string>()
@@ -39,6 +42,8 @@ export async function collectMediaInputs(
   async function addFile(path: string) {
     if (!isMedia(path)) return
     const canonical = resolve(path)
+    const parent = await checkDirectory(dirname(canonical))
+    if (isInternalMediaPath(parent)) throw new Error('任务工作目录中的文件不能作为普通媒体输入。')
     const key = process.platform === 'win32' ? canonical.toLowerCase() : canonical
     if (seen.has(key)) return
     seen.add(key)
@@ -67,6 +72,8 @@ export async function collectMediaInputs(
     const info = await lstat(root)
     if (!info.isDirectory() || info.isSymbolicLink())
       throw new Error('请选择普通目录，不支持符号链接或联接目录')
+    if (isInternalMediaPath(await checkDirectory(root)))
+      throw new Error('任务工作目录不能作为普通媒体输入。')
     const pending = [root]
     while (pending.length) {
       const current = pending.pop()!

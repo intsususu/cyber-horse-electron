@@ -131,6 +131,8 @@ export class PreparationService {
         throw new Error('请配置普通绝对路径，不支持设备路径。')
       await directory(resolve(path))
       const resolved = await realpath(resolve(path))
+      if (resolved.split(sep).some(isInternalMediaEntry))
+        throw new Error('任务工作目录或旧版本遗留目录不能配置为预处理范围。')
       const protectedTrees = [
         this.dataDirectory,
         ...this.protectedDirectories,
