@@ -46,20 +46,31 @@ npm run dist:portable
 
 如需安装向导，运行 `npm run dist`，输出为 `release/Cyber-Horse-0.1.0-x64.exe`。`npm run pack` 只生成解包目录，必须保留整个目录，不能仅复制其中的 EXE。当前未配置代码签名；生成文件不代表已完成目标电脑运行、安装升级或签名验证。
 
+需要直接运行、启动时不再解压的 Windows x64 文件夹版，运行：
+
+```powershell
+npm run dist:unpacked
+```
+
+输出为 `release/win-unpacked/`，双击其中的 `Cyber Horse.exe` 即可启动。将整个文件夹复制到固定位置，再为该 EXE 创建桌面快捷方式；桌面只需保留快捷方式，程序文件夹中的资源不能删除或只复制 EXE。该命令只生成程序文件夹，不创建安装器或自解压单文件，也不会自动覆盖已安装程序或桌面快捷方式。成品检查可运行 `node scripts/desktop-packaged.mjs "release/win-unpacked/Cyber Horse.exe"`。
+
+打包完成归档后自动核对主进程、预加载、主页面及页面引用资源，缺失时终止打包。构建与打包须顺序执行，避免构建清理 `out` 时打包读到不完整目录。成品启动验证运行 `node scripts/desktop-packaged.mjs`，也可追加 EXE 路径；该检查直接启动免安装程序，使用独立用户数据目录验证解压、主页面、图标和深浅主题，并将截图保存到 `test-results`。开发桌面测试不能替代这项成品检查。
+
 ## 命令
 
-| 命令                    | 用途                                           |
-| ----------------------- | ---------------------------------------------- |
-| `npm run dev`           | 启动 Electron 并启用界面热更新                 |
-| `npm run dev:web`       | 在浏览器中预览界面                             |
-| `npm run check`         | 类型检查、行为测试与生产构建                   |
-| `npm run test:desktop`  | 启动真实 Electron，验证桥接与交互并保存截图    |
-| `npm run build`         | 构建主进程、预加载和页面到 `out`               |
-| `npm run preview`       | 启动生产构建                                   |
-| `npm run pack`          | 生成未签名的解包桌面程序到 `release`           |
-| `npm run dist`          | 生成 Windows NSIS 安装包，正式分发前需配置签名 |
-| `npm run dist:portable` | 生成 Windows x64 免安装单文件 EXE 到 `release` |
-| `npm run format`        | 统一代码和文档格式                             |
+| 命令                    | 用途                                                     |
+| ----------------------- | -------------------------------------------------------- |
+| `npm run dev`           | 启动 Electron 并启用界面热更新                           |
+| `npm run dev:web`       | 在浏览器中预览界面                                       |
+| `npm run check`         | 类型检查、行为测试与生产构建                             |
+| `npm run test:desktop`  | 启动真实 Electron，验证桥接与交互并保存截图              |
+| `npm run build`         | 构建主进程、预加载和页面到 `out`                         |
+| `npm run preview`       | 启动生产构建                                             |
+| `npm run pack`          | 生成未签名的解包桌面程序到 `release`                     |
+| `npm run dist`          | 生成 Windows NSIS 安装包，正式分发前需配置签名           |
+| `npm run dist:portable` | 生成 Windows x64 免安装单文件 EXE 到 `release`           |
+| `npm run dist:unpacked` | 生成 Windows x64 直接运行文件夹到 `release/win-unpacked` |
+| `npm run format`        | 统一代码和文档格式                                       |
 
 如果依赖安装器限制安装脚本，Electron 运行文件可能没有下载。可在确认来源后执行 `node node_modules/electron/install.js`，再重新启动。无需全局安装 Electron。
 

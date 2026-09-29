@@ -20,6 +20,7 @@
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder --win nsis",
     "dist:portable": "npm run build && electron-builder --win portable --x64",
+    "dist:unpacked": "npm run build && electron-builder --win --x64 --dir",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "npm run typecheck && npm test && npm run build"

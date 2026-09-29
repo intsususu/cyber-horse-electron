@@ -8,6 +8,7 @@ files:
   - config/default-settings.json
   - assets/**/*
 asar: true
+afterPack: scripts/verify-packaged-assets.cjs
 win:
   icon: assets/icon.ico
   target:
