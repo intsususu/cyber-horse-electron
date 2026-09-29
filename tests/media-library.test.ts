@@ -548,6 +548,84 @@ describe('媒体库复合任务', () => {
     )
     return { ...f, directory, original, tools, service, lock }
   }
+  it('先入队再读取详情；同影片不同操作和版本只保留一项，等待中可取消', async () => {
+    const f = await processFixture()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const detail = vi.spyOn(f.client, 'detail').mockImplementationOnce(async () => {
+      await gate
+      throw new Error('模拟详情读取失败')
+    })
+    const first = f.service.enqueue({ id: 'v1', kind: 'video', name: '测试影片' })
+    expect(first.alreadyQueued).toBe(false)
+    expect(f.service.queueSummary().active).toBe(1)
+    expect(
+      f.service.enqueue({ id: 'v1', sourceId: 's2', kind: 'subtitle', name: '测试影片' }),
+    ).toEqual({
+      id: first.id,
+      alreadyQueued: true,
+    })
+    const second = f.service.enqueue({ id: 'v2', kind: 'video', name: '另一影片' })
+    expect(second.alreadyQueued).toBe(false)
+    expect(f.service.queueSummary().active).toBe(2)
+    await vi.waitFor(() => expect(detail).toHaveBeenCalledTimes(1))
+    expect(f.service.snapshot().find((record) => record.id === second.id)?.status).toBe('pending')
+    f.service.cancel(second.id)
+    expect(f.service.snapshot().find((record) => record.id === second.id)?.status).toBe('cancelled')
+    release()
+    await vi.waitFor(() => expect(f.service.active).toBe(false))
+    expect(f.service.snapshot().find((record) => record.id === first.id)?.message).toContain(
+      '模拟详情读取失败',
+    )
+    expect(f.service.queueSummary().active).toBe(0)
+    expect(await f.downloads.snapshot()).toEqual([])
+    expect(await readFile(f.original)).toEqual(payload)
+  })
+  it('入队后的预检失败只记录失败任务，可再次提交', async () => {
+    const f = await processFixture()
+    f.item.MediaSources[0]!.Path = '/server/不存在/ABC-123.mp4'
+    const first = f.service.enqueue({ id: 'v1', kind: 'video', name: '测试影片' })
+    await vi.waitFor(() => expect(f.service.active).toBe(false))
+    expect(f.service.snapshot()[0]?.status).toBe('failed')
+    expect(f.service.snapshot()[0]?.message).toContain('未在已配置的 NAS')
+    const retry = f.service.enqueue({ id: 'v1', kind: 'video', name: '测试影片' })
+    expect(retry.alreadyQueued).toBe(false)
+    expect(retry.id).not.toBe(first.id)
+    await vi.waitFor(() => expect(f.service.active).toBe(false))
+  })
+  it('取消正在读取详情的任务会中止请求且不开始下载', async () => {
+    const f = await processFixture()
+    const detail = vi.spyOn(f.client, 'detail').mockImplementationOnce(
+      (_id, signal) =>
+        new Promise((_resolve, reject) => {
+          if (signal?.aborted) reject(new Error('请求已取消。'))
+          else
+            signal?.addEventListener('abort', () => reject(new Error('请求已取消。')), {
+              once: true,
+            })
+        }),
+    )
+    const queued = f.service.enqueue({ id: 'v1', kind: 'video', name: '测试影片' })
+    await vi.waitFor(() => expect(detail).toHaveBeenCalledOnce())
+    f.service.cancel(queued.id)
+    await vi.waitFor(() => expect(f.service.active).toBe(false))
+    expect(f.service.snapshot()[0]?.status).toBe('cancelled')
+    expect(await f.downloads.snapshot()).toEqual([])
+    expect(await readFile(f.original)).toEqual(payload)
+  })
+  it('入队后在队列内完成预检及处理', async () => {
+    const f = await processFixture()
+    const queued = f.service.enqueue({ id: 'v1', kind: 'subtitle', name: '测试影片' })
+    expect(queued.alreadyQueued).toBe(false)
+    await vi.waitFor(() => expect(f.service.active).toBe(false), { timeout: 10000 })
+    const record = f.service.snapshot()[0]!
+    expect(record.id).toBe(queued.id)
+    expect(record.status, record.message).toBe('completed')
+    expect(record.sourceId).toBe('s1')
+    expect(record.original).toBe(f.original)
+  })
   it('自动定位拒绝歧义路径、越界路径与大小不符的文件', async () => {
     const f = await processFixture()
     await mkdir(join(f.settings.paths.nas, 'server', '影片'), { recursive: true })

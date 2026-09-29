@@ -104,6 +104,7 @@ function allowPlayerFullscreen(
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     title: 'Cyber Horse',
+    icon: join(app.getAppPath(), 'assets/icon.png'),
     width: 1480,
     height: 900,
     minWidth: 1060,

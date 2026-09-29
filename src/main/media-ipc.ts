@@ -8,6 +8,7 @@ import {
   mediaDownloadSchema,
   mediaImageSchema,
   mediaProcessSchema,
+  mediaEnqueueSchema,
   mediaPlaybackSchema,
   mediaPlaybackErrorSchema,
   mediaLinkSchema,
@@ -111,6 +112,7 @@ export function registerMediaIpc(
   )
   bind(channels.getMediaDownloads, z.undefined(), () => downloads.snapshot())
   bind(channels.cancelMediaDownload, z.string().uuid(), (id) => downloads.cancel(id))
+  bind(channels.enqueueMediaProcess, mediaEnqueueSchema, (request) => processes.enqueue(request))
   bind(channels.previewMediaProcess, mediaProcessSchema, (request) =>
     processes.preview(request.id, request.sourceId, request.kind),
   )

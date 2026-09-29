@@ -411,6 +411,13 @@
 .media-context-actions button.is-favorite {
   color: var(--green);
 }
+.media-context-actions button.is-danger {
+  color: var(--text-muted);
+}
+.media-context-actions button.is-danger:hover:enabled,
+.media-context-actions button.is-danger:focus-visible {
+  color: var(--danger);
+}
 .media-context-divider {
   display: block;
   height: 1px;

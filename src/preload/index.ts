@@ -8,6 +8,7 @@ const api: DesktopApi = {
   closeMediaPlayback: (token) => ipcRenderer.invoke(channels.closeMediaPlayback, token),
   reportMediaPlaybackError: (request) =>
     ipcRenderer.invoke(channels.reportMediaPlaybackError, request),
+  enqueueMediaProcess: (request) => ipcRenderer.invoke(channels.enqueueMediaProcess, request),
   previewMediaProcess: (request) => ipcRenderer.invoke(channels.previewMediaProcess, request),
   startMediaProcess: (id) => ipcRenderer.invoke(channels.startMediaProcess, id),
   getMediaProcesses: () => ipcRenderer.invoke(channels.getMediaProcesses),

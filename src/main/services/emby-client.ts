@@ -253,7 +253,7 @@ export class EmbyClient {
     return this.response(
       url.href,
       { method, headers: { Authorization: authHeader, 'X-Emby-Token': session.token } },
-      AbortSignal.any([session.signal, signal ?? AbortSignal.timeout(20000)]),
+      AbortSignal.any([session.signal, AbortSignal.timeout(20000), ...(signal ? [signal] : [])]),
     )
   }
   private parsePage(data: unknown) {
@@ -365,14 +365,21 @@ export class EmbyClient {
       favoriteDateUnavailable: query.favorites && items.some((item) => !item.favoriteDate),
     }
   }
-  async detail(itemId: string): Promise<MediaDetail> {
+  async detail(itemId: string, signal?: AbortSignal): Promise<MediaDetail> {
     const s = await this.authenticate()
+    signal?.throwIfAborted()
     const parsed = itemSchema.safeParse(
       await this.json(
-        await this.request(s, `Users/${s.userId}/Items/${itemId}`, {
-          Fields: fields,
-          EnableUserData: 'true',
-        }),
+        await this.request(
+          s,
+          `Users/${s.userId}/Items/${itemId}`,
+          {
+            Fields: fields,
+            EnableUserData: 'true',
+          },
+          'GET',
+          signal,
+        ),
       ),
     )
     if (!parsed.success) throw new Error('Emby 媒体详情格式无效。')

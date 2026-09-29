@@ -116,6 +116,7 @@ try {
       'cancelMediaDownload',
       'previewMediaProcess',
       'startMediaProcess',
+      'enqueueMediaProcess',
       'getMediaProcesses',
       'getMediaQueueSummary',
       'cancelMediaProcess',

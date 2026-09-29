@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { ArrowLeft, Eye, EyeOff, Film, Heart, Play, RefreshCw, Search } from 'lucide-react'
-import type { LibraryVideo, MediaDetail, MediaImageRequest } from '../../../shared/media-library'
+import type { LibraryVideo, MediaImageRequest } from '../../../shared/media-library'
 import type { Workspace } from '../hooks/use-workspace'
 import { useMediaLibrary } from '../hooks/use-media-library'
 import { MediaPlayer } from './MediaPlayer'
@@ -86,7 +86,8 @@ function splitRelatedName(name: string) {
 export function MediaLibrary({ active, workspace }: { active: boolean; workspace: Workspace }) {
   const library = useMediaLibrary(workspace, active)
   const [source, setSource] = useState('')
-  const [processing, setProcessing] = useState(false)
+  const [queueingItems, setQueueingItems] = useState<Set<string>>(() => new Set())
+  const queueingRef = useRef(new Set<string>())
   const [processError, setProcessError] = useState('')
   const [contextMenu, setContextMenu] = useState<MediaContextState | null>(null)
   const [searchDraft, setSearchDraft] = useState('')
@@ -132,7 +133,7 @@ export function MediaLibrary({ active, workspace }: { active: boolean; workspace
   }
   const openContextMenu = (event: MouseEvent<HTMLElement>, item: LibraryVideo) => {
     event.preventDefault()
-    if (!active || busy || action || processing || playing) return
+    if (!active || busy || action || playing) return
     const trigger = event.currentTarget
     contextTrigger.current =
       trigger instanceof HTMLButtonElement ? trigger : trigger.querySelector('.media-card-open')
@@ -180,31 +181,38 @@ export function MediaLibrary({ active, workspace }: { active: boolean; workspace
       setContextMenu(null)
     }
   }, [active, playing])
-  const previewProcess = async (
+  const enqueueProcess = async (
     kind: 'subtitle' | 'video',
-    detail: MediaDetail,
-    sourceId: string,
+    item: LibraryVideo,
+    sourceId?: string,
   ) => {
-    if (processing) return
-    setProcessing(true)
+    if (queueingRef.current.has(item.id)) return
+    queueingRef.current.add(item.id)
+    setQueueingItems(new Set(queueingRef.current))
     setProcessError('')
+    const menuRequest = contextMenu?.item.id === item.id ? contextMenu.request : null
     try {
-      const plan = await window.cyberHorse!.previewMediaProcess({
-        id: detail.id,
+      const result = await window.cyberHorse!.enqueueMediaProcess({
+        id: item.id,
         sourceId,
         kind,
+        name: item.name,
       })
-      await window.cyberHorse!.startMediaProcess(plan.id)
-      workspace.setToast('媒体处理任务已加入队列，可继续浏览。进度请到任务队列查看。')
-      if (contextMenu?.item.id === detail.id) closeContextMenu(true)
+      workspace.setToast(
+        result.alreadyQueued
+          ? '此影片已在任务队列中，请勿重复提交。'
+          : '媒体处理任务已加入队列，可继续浏览和操作其他视频。进度请到任务队列查看。',
+      )
+      if (menuRequest && contextRequest.current === menuRequest) closeContextMenu(true)
     } catch (error) {
-      const message = error instanceof Error ? error.message : '无法预览媒体任务。'
-      if (view?.kind === 'detail' && view.detail.id === detail.id) setProcessError(message)
+      const message = error instanceof Error ? error.message : '无法加入媒体任务队列。'
+      if (view?.kind === 'detail' && view.detail.id === item.id) setProcessError(message)
       setContextMenu((current) =>
-        current?.item.id === detail.id ? { ...current, error: message } : current,
+        current?.item.id === item.id ? { ...current, error: message } : current,
       )
     } finally {
-      setProcessing(false)
+      queueingRef.current.delete(item.id)
+      setQueueingItems(new Set(queueingRef.current))
     }
   }
   useEffect(() => setSource(''), [detailId])
@@ -533,7 +541,7 @@ export function MediaLibrary({ active, workspace }: { active: boolean; workspace
                   detail={view.detail}
                   source={selectedSource}
                   disabled={busy || !!action}
-                  processing={processing}
+                  processing={queueingItems.has(detailId)}
                   processError={processError}
                   interactive={active && !playing}
                   javbusConfigured={!!workspace.settings.mediaServer.javbusUrl}
@@ -542,9 +550,9 @@ export function MediaLibrary({ active, workspace }: { active: boolean; workspace
                   onFavorite={() => void library.favorite(view.detail)}
                   onDownload={(id) => void library.download(view.detail.id, id)}
                   onProcess={(kind) => {
-                    if (selectedSource) void previewProcess(kind, view.detail, selectedSource.id)
+                    if (selectedSource) void enqueueProcess(kind, view.detail, selectedSource.id)
                   }}
-                  onRemove={() => void library.remove()}
+                  onRemove={() => void library.remove(view.detail.id)}
                   onFilter={(filter) => void library.filter(filter)}
                 />
               </div>
@@ -614,13 +622,12 @@ export function MediaLibrary({ active, workspace }: { active: boolean; workspace
           key={contextMenu.request}
           menu={contextMenu}
           disabled={busy || !!action}
-          processing={processing}
+          processing={queueingItems.has(contextMenu.item.id)}
           onSourceChange={(sourceId) =>
             setContextMenu((current) => (current ? { ...current, sourceId } : current))
           }
           onProcess={(kind) => {
-            if (contextMenu.detail && contextMenu.sourceId)
-              void previewProcess(kind, contextMenu.detail, contextMenu.sourceId)
+            void enqueueProcess(kind, contextMenu.item, contextMenu.sourceId || undefined)
           }}
           onDownload={() => {
             if (!contextMenu.sourceId) return
@@ -629,6 +636,10 @@ export function MediaLibrary({ active, workspace }: { active: boolean; workspace
           }}
           onFavorite={() => {
             void library.favorite(contextMenu.detail ?? contextMenu.item)
+            closeContextMenu(false)
+          }}
+          onRemove={() => {
+            void library.remove(contextMenu.item.id)
             closeContextMenu(false)
           }}
           onClose={closeContextMenu}

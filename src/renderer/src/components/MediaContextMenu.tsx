@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Download, Heart, Subtitles, WandSparkles } from 'lucide-react'
+import { Download, Heart, Subtitles, Trash2, WandSparkles } from 'lucide-react'
 import type { LibraryVideo, MediaDetail } from '../../../shared/media-library'
 
 export type MediaContextState = {
@@ -22,6 +22,7 @@ export function MediaContextMenu({
   onProcess,
   onDownload,
   onFavorite,
+  onRemove,
   onClose,
 }: {
   menu: MediaContextState
@@ -31,12 +32,15 @@ export function MediaContextMenu({
   onProcess: (kind: 'subtitle' | 'video') => void
   onDownload: () => void
   onFavorite: () => void
+  onRemove: () => void
   onClose: (restoreFocus: boolean) => void
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
   const [position, setPosition] = useState({ left: menu.x, top: menu.y })
   const source = menu.detail?.sources.find((item) => item.id === menu.sourceId)
-  const canProcess = !!source && !!menu.detail?.canDownload && !disabled && !processing
+  const canProcess =
+    !disabled && !processing && (!menu.detail || (!!source && menu.detail.canDownload))
+  const canDownload = !!source && !!menu.detail?.canDownload && !disabled && !processing
   const favorite = menu.detail?.favorite ?? menu.item.favorite
   const unavailable = menu.loading
     ? '正在读取媒体信息'
@@ -116,15 +120,23 @@ export function MediaContextMenu({
         </label>
       )}
       <div className="media-context-actions">
-        <button disabled={!canProcess} title={unavailable} onClick={() => onProcess('subtitle')}>
+        <button
+          disabled={!canProcess}
+          title={menu.detail ? unavailable : '加入队列后检查媒体信息'}
+          onClick={() => onProcess('subtitle')}
+        >
           <Subtitles size={17} aria-hidden="true" />
           中文字幕
         </button>
-        <button disabled={!canProcess} title={unavailable} onClick={() => onProcess('video')}>
+        <button
+          disabled={!canProcess}
+          title={menu.detail ? unavailable : '加入队列后检查媒体信息'}
+          onClick={() => onProcess('video')}
+        >
           <WandSparkles size={17} aria-hidden="true" />
           视频破解
         </button>
-        <button disabled={!canProcess} title={unavailable} onClick={onDownload}>
+        <button disabled={!canDownload} title={unavailable} onClick={onDownload}>
           <Download size={17} aria-hidden="true" />
           下载
         </button>
@@ -136,6 +148,24 @@ export function MediaContextMenu({
         >
           <Heart size={17} fill={favorite ? 'currentColor' : 'none'} aria-hidden="true" />
           {favorite ? '取消关注' : '关注'}
+        </button>
+        <span className="media-context-divider" aria-hidden="true" />
+        <button
+          className="is-danger"
+          disabled={disabled || processing || !menu.detail?.canDelete}
+          title={
+            menu.loading
+              ? '正在读取媒体信息'
+              : !menu.detail
+                ? '媒体信息读取失败'
+                : menu.detail.canDelete
+                  ? '从 Emby 删除媒体，需再次确认'
+                  : '账号未获得删除权限'
+          }
+          onClick={onRemove}
+        >
+          <Trash2 size={17} aria-hidden="true" />
+          删除媒体
         </button>
       </div>
       {menu.loading && <p className="media-context-status">正在读取媒体信息…</p>}

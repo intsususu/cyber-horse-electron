@@ -119,6 +119,15 @@ export type MediaDownload = {
   ended: string | null
 }
 export type MediaQueueSummary = { active: number }
+export const mediaEnqueueSchema = z
+  .object({
+    id: mediaIdSchema,
+    sourceId: mediaIdSchema.optional(),
+    kind: z.enum(['subtitle', 'video']),
+    name: z.string().trim().min(1).max(512),
+  })
+  .strict()
+export type MediaEnqueueResult = { id: string; alreadyQueued: boolean }
 export interface MediaLibraryApi {
   openMediaLink(request: z.infer<typeof mediaLinkSchema>): Promise<void>
   openMediaPlayback(request: {
@@ -129,6 +138,7 @@ export interface MediaLibraryApi {
   }): Promise<MediaPlaybackSession | null>
   closeMediaPlayback(token: string): Promise<void>
   reportMediaPlaybackError(request: z.infer<typeof mediaPlaybackErrorSchema>): Promise<void>
+  enqueueMediaProcess(request: z.infer<typeof mediaEnqueueSchema>): Promise<MediaEnqueueResult>
   previewMediaProcess(request: {
     id: string
     sourceId: string

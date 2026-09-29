@@ -9,10 +9,13 @@ files:
   - assets/**/*
 asar: true
 win:
+  icon: assets/icon.ico
   target:
     - target: nsis
       arch: [x64]
 nsis:
+  installerIcon: assets/icon.ico
+  uninstallerIcon: assets/icon.ico
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true

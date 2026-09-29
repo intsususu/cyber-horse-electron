@@ -345,19 +345,23 @@ export function useMediaLibrary(workspace: Workspace, active: boolean) {
         workspace.setToast('下载已开始，可在任务队列查看进度或取消。')
         workspace.addLog('已启动媒体库下载，请在任务队列查看结果。')
       }),
-    remove: () =>
+    remove: (id: string) =>
       perform('delete', async () => {
         const request = sequence.current
-        if (view?.kind !== 'detail') return
-        if (await window.cyberHorse!.deleteMediaItem(view.detail.id)) {
+        if (await window.cyberHorse!.deleteMediaItem(id)) {
           if (request !== sequence.current) return
-          mutateViews(view.detail.id, null)
-          if (currentListing) {
+          mutateViews(id, null)
+          if (
+            viewRef.current?.kind === 'detail' &&
+            viewRef.current.detail.id === id &&
+            currentListing
+          ) {
             setHistory([])
             const query = { ...currentListing.query, start: 0 }
             if (currentListing.kind === 'search' && query.searchTerm) await loadSearch(query)
             else await loadWall(query)
-          } else setView(null)
+          } else if (viewRef.current?.kind === 'detail' && viewRef.current.detail.id === id)
+            setView(null)
           workspace.setToast('服务器已删除该媒体项目。')
         }
       }),

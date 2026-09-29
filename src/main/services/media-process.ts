@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { basename, dirname, extname, join, relative } from 'node:path'
 import { mkdir, opendir, open, rename } from 'node:fs/promises'
 import type { Settings } from '../../shared/contracts'
-import type { MediaProcessPlan, MediaProcessState } from '../../shared/media-library'
+import type {
+  MediaEnqueueResult,
+  MediaProcessPlan,
+  MediaProcessState,
+} from '../../shared/media-library'
 import type { PipelineStep } from '../../shared/pipeline'
 import { ExecutionLock } from './execution-lock'
 import { EmbyClient } from './emby-client'
@@ -37,13 +41,20 @@ type Plan = {
   expires: number
   generation: number
 }
+type QueueRequest = {
+  id: string
+  itemId: string
+  sourceId?: string
+  kind: 'subtitle' | 'video'
+  name: string
+}
 const configKey = (s: Settings) => JSON.stringify([s.paths, s.mediaServer, s.subtitle])
 const videoFile = (path: string) => mediaExtensions.includes(extname(path).slice(1).toLowerCase())
 /** 媒体复合任务在已配置目录处理选定文件，回写校验成功后清理旧文件。 */
 export class MediaProcessService {
   private plans = new Map<string, Plan>()
   private records: MediaProcessState[] = []
-  private queue: Plan[] = []
+  private queue: (Plan | QueueRequest)[] = []
   private release?: () => void
   private work?: Promise<void>
   private controller?: AbortController
@@ -77,29 +88,86 @@ export class MediaProcessService {
   clearFinished() {
     this.records = this.records.filter((record) => ['pending', 'running'].includes(record.status))
   }
+  enqueue(request: {
+    id: string
+    sourceId?: string
+    kind: 'subtitle' | 'video'
+    name: string
+  }): MediaEnqueueResult {
+    const existing = this.records.find(
+      (record) => record.itemId === request.id && ['pending', 'running'].includes(record.status),
+    )
+    if (existing) return { id: existing.id, alreadyQueued: true }
+    if (this.queue.length >= 20) throw new Error('待处理任务已达上限。')
+    if (!this.release) this.release = this.lock.acquire('媒体库复合任务')
+    const id = randomUUID()
+    const queued: QueueRequest = {
+      id,
+      itemId: request.id,
+      sourceId: request.sourceId,
+      kind: request.kind,
+      name: request.name,
+    }
+    this.queue.push(queued)
+    this.records.push({
+      id,
+      itemId: request.id,
+      sourceId: request.sourceId ?? '',
+      name: request.name,
+      kind: request.kind,
+      original: '',
+      affected: [],
+      steps: [
+        '读取影片信息并检查处理条件',
+        '下载并核对原文件',
+        request.kind === 'subtitle' ? '提取中文字幕并封装' : '视频破解',
+        'MDC 元数据刮削',
+        '校验并回写原媒体目录',
+        '刷新 Emby 项目',
+      ],
+      status: 'pending',
+      message: '等待串行处理。',
+      pipeline: null,
+      downloadId: '',
+      journal: join(this.dataDirectory, 'media-process', `${id}.jsonl`),
+    })
+    this.scheduleDrain()
+    return { id, alreadyQueued: false }
+  }
   async preview(
     itemId: string,
-    sourceId: string,
+    sourceId: string | undefined,
     kind: 'subtitle' | 'video',
+    signal?: AbortSignal,
   ): Promise<MediaProcessPlan> {
     if (this.previewing) throw new Error('媒体处理预览正在进行。')
     this.previewing = true
-    this.previewController = new AbortController()
+    const previewController = new AbortController()
+    this.previewController = previewController
+    const preflightSignal = signal
+      ? AbortSignal.any([previewController.signal, signal])
+      : previewController.signal
     try {
       const settings = await this.settings()
+      checkpoint(preflightSignal)
       const nas = await safeRoot(settings.paths.nas, this.protectedPaths)
-      const detail = await this.client.detail(itemId)
-      const source = detail.sources.find((v) => v.id === sourceId)
+      checkpoint(preflightSignal)
+      const detail = await this.client.detail(itemId, preflightSignal)
+      checkpoint(preflightSignal)
+      const source = sourceId ? detail.sources.find((v) => v.id === sourceId) : detail.sources[0]
       if (!source || !detail.canDownload)
         throw new Error('没有可处理的媒体版本或账号没有下载权限。')
       const original = await this.resolveOriginal(nas, source.path || detail.path)
+      checkpoint(preflightSignal)
       const parent = await safeRoot(dirname(original), this.protectedPaths)
+      checkpoint(preflightSignal)
       if (!inside(nas, parent) || pathKey(nas) === pathKey(parent) || !videoFile(original))
         throw new Error('Emby 原视频不在 NAS 的独立影片子目录中，已停止处理。')
       const affected: string[] = []
       const stem = basename(original, extname(original)).toLowerCase()
       let videos = 0
       for await (const entry of await opendir(parent)) {
+        checkpoint(preflightSignal)
         if (entry.isFile() && videoFile(entry.name)) videos++
         const name = entry.name.toLowerCase()
         if (
@@ -116,7 +184,10 @@ export class MediaProcessService {
           '回写目录必须只包含一个视频，避免影响其他版本；可先下载后在工作台单独处理。',
         )
       const stamps = new Map<string, FileStamp>()
-      for (const path of affected) stamps.set(path, await fileStamp(path))
+      for (const path of affected) {
+        checkpoint(preflightSignal)
+        stamps.set(path, await fileStamp(path))
+      }
       const originalStamp = stamps.get(original)
       if (
         !originalStamp ||
@@ -137,6 +208,7 @@ export class MediaProcessService {
             : settings.paths[key],
           this.protectedPaths,
         )
+        checkpoint(preflightSignal)
         if (roots.some((previous) => overlap(root, previous)))
           throw new Error('下载、处理、输出和原媒体目录不能相同或互相包含。')
         roots.push(root)
@@ -145,13 +217,13 @@ export class MediaProcessService {
       await this.tools.check(
         settings,
         steps,
-        AbortSignal.any([this.previewController.signal, AbortSignal.timeout(60000)]),
+        AbortSignal.any([preflightSignal, AbortSignal.timeout(60000)]),
       )
-      checkpoint(this.previewController.signal)
+      checkpoint(preflightSignal)
       const plan: MediaProcessPlan = {
         id: randomUUID(),
         itemId,
-        sourceId,
+        sourceId: source.id,
         name: detail.name,
         kind,
         original,
@@ -223,18 +295,24 @@ export class MediaProcessService {
       downloadId: '',
       journal: join(this.dataDirectory, 'media-process', `${id}.jsonl`),
     })
-    if (!this.work)
-      this.work = this.drain().finally(() => {
-        this.work = undefined
+    this.scheduleDrain()
+  }
+  private scheduleDrain() {
+    if (this.work) return
+    this.work = this.drain().finally(() => {
+      this.work = undefined
+      if (this.queue.length) this.scheduleDrain()
+      else {
         this.release?.()
         this.release = undefined
-      })
+      }
+    })
   }
   cancel(id: string) {
     const record = this.records.find((v) => v.id === id)
     if (!record) return
     if (record.status === 'pending') {
-      this.queue = this.queue.filter((v) => v.public.id !== id)
+      this.queue = this.queue.filter((v) => ('public' in v ? v.public.id : v.id) !== id)
       record.status = 'cancelled'
       record.message = '排队任务已取消。'
     }
@@ -252,17 +330,23 @@ export class MediaProcessService {
   }
   private async drain() {
     while (this.queue.length) {
-      const plan = this.queue.shift()!
-      const record = this.records.find((v) => v.id === plan.public.id)!
+      const queued = this.queue.shift()!
+      const record = this.records.find(
+        (v) => v.id === ('public' in queued ? queued.public.id : queued.id),
+      )!
       this.current = record
       this.controller = new AbortController()
-      await this.execute(plan, record, this.controller.signal)
+      await this.execute(queued, record, this.controller.signal)
       this.processor = undefined
       this.current = undefined
       this.controller = undefined
     }
   }
-  private async execute(plan: Plan, record: MediaProcessState, signal: AbortSignal) {
+  private async execute(
+    queued: Plan | QueueRequest,
+    record: MediaProcessState,
+    signal: AbortSignal,
+  ) {
     let journal: Awaited<ReturnType<typeof open>> | undefined
     const write = async (value: unknown) => {
       if (journal) {
@@ -274,12 +358,26 @@ export class MediaProcessService {
     try {
       await mkdir(dirname(record.journal), { recursive: true })
       journal = await open(record.journal, 'wx')
+      let plan: Plan
+      if ('public' in queued) plan = queued
+      else {
+        record.message = '正在读取影片信息并检查 NAS 文件及处理工具。'
+        const preview = await this.preview(queued.itemId, queued.sourceId, queued.kind, signal)
+        plan = this.plans.get(preview.id)!
+        this.plans.delete(preview.id)
+        plan.public.id = queued.id
+        record.sourceId = preview.sourceId
+        record.name = preview.name
+        record.original = preview.original
+        record.affected = preview.affected
+        record.steps = preview.steps
+      }
       await write({ type: '计划', plan: plan.public })
       if (
         configKey(await this.settings()) !== configKey(plan.settings) ||
         plan.generation !== this.client.generation
       )
-        throw new Error('服务器连接或处理配置已变化，请重新预览。')
+        throw new Error('服务器连接或处理配置已变化，请重新提交任务。')
       for (const [path, stamp] of plan.stamps) await unchanged(path, stamp)
       checkpoint(signal)
       record.message = '正在下载并校验所选媒体版本。'

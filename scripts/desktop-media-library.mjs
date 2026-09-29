@@ -57,6 +57,7 @@ export async function verifyMediaLibrary(app, page, output) {
   let rejectDirectPlayback = false
   let subtitleFailures = 0
   let delayPlaybackDetail = false
+  let queueDetailGate = null
   const item = (id) => ({
     Id: id,
     Name:
@@ -262,6 +263,7 @@ export async function verifyMediaLibrary(app, page, output) {
     }
     if (/\/Items\/v\d+$/.test(url.pathname)) {
       const id = url.pathname.split('/').at(-1)
+      if (id === 'v3' && queueDetailGate) await queueDetailGate
       if (delayPlaybackDetail) await new Promise((resolve) => setTimeout(resolve, 350))
       json(item(id))
       return
@@ -431,6 +433,7 @@ export async function verifyMediaLibrary(app, page, output) {
       '视频破解',
       '下载',
       '关注',
+      '删除媒体',
     ])
     await expect(contextMenu.getByRole('button', { name: '中文字幕' })).toBeEnabled()
     await expect(contextMenu.getByLabel('快捷操作使用的媒体版本')).toHaveValue('source1')
@@ -628,6 +631,9 @@ export async function verifyMediaLibrary(app, page, output) {
     await expect(relatedContext.getByRole('button', { name: '中文字幕' })).toBeEnabled()
     await page.keyboard.press('Escape')
     await expect(page.getByRole('button', { name: '视频破解', exact: true })).toBeHidden()
+    await expect(
+      related.getByRole('button', { name: '查看详情：ABC-456 测试影片 2' }),
+    ).toBeFocused()
     const moreActions = page.locator('.media-more-actions > summary')
     await moreActions.focus()
     await page.keyboard.press('Enter')
@@ -920,7 +926,9 @@ export async function verifyMediaLibrary(app, page, output) {
     await page.getByRole('tab', { name: /^已完成/ }).click()
     await expect(page.locator('.media-download-task')).toContainText('下载完成')
     await expect(page.locator('.task-panel')).toBeVisible()
-    await expect(page.getByRole('tab', { name: /^已完成/ }).locator('.count-label')).toHaveText('1')
+    await expect(page.getByRole('tab', { name: /^已完成/ }).locator('.count-label')).toHaveText(
+      String(await page.locator('.queue-card').count()),
+    )
     await expect(page.getByRole('button', { name: '清空记录' })).toBeEnabled()
     for (const theme of ['深色模式', '浅色模式']) {
       await run(theme)
@@ -935,6 +943,56 @@ export async function verifyMediaLibrary(app, page, output) {
     expect(await readFile(jobs.at(-1).path)).toEqual(payload)
     await run('EMBY媒体库')
     await expect(wall()).toHaveCount(30)
+    let releaseQueueDetail
+    queueDetailGate = new Promise((resolve) => {
+      releaseQueueDetail = resolve
+    })
+    await page
+      .getByRole('button', { name: '查看详情：测试影片 3', exact: true })
+      .click({ button: 'right' })
+    const queuedMenu = page.getByRole('dialog', { name: '快捷操作：测试影片 3', exact: true })
+    await expect(queuedMenu.getByRole('button', { name: '视频破解' })).toBeEnabled()
+    await queuedMenu.getByRole('button', { name: '视频破解' }).click()
+    await expect(queuedMenu).toHaveCount(0)
+    await expect(page.locator('.toast')).toContainText('已加入队列')
+    await page
+      .getByRole('button', { name: '查看详情：测试影片 4', exact: true })
+      .click({ button: 'right' })
+    const nextMenu = page.getByRole('dialog', { name: '快捷操作：测试影片 4', exact: true })
+    await expect(nextMenu.getByRole('button', { name: '中文字幕' })).toBeEnabled()
+    await nextMenu.getByRole('button', { name: '中文字幕' }).click()
+    await expect(page.locator('.toast')).toContainText('已加入队列')
+    const queued = await page.evaluate(async () => {
+      const records = await window.cyberHorse.getMediaProcesses()
+      const duplicate = await window.cyberHorse.enqueueMediaProcess({
+        id: 'v3',
+        sourceId: 'source2',
+        kind: 'subtitle',
+        name: '测试影片 3',
+      })
+      return { records, duplicate }
+    })
+    expect(
+      queued.records.filter((record) => ['pending', 'running'].includes(record.status)),
+    ).toHaveLength(2)
+    expect(queued.duplicate).toEqual({
+      id: queued.records.find((record) => record.itemId === 'v3').id,
+      alreadyQueued: true,
+    })
+    await page.evaluate(
+      async (ids) => {
+        for (const id of ids) await window.cyberHorse.cancelMediaProcess(id)
+      },
+      queued.records.map((record) => record.id),
+    )
+    releaseQueueDetail()
+    queueDetailGate = null
+    await expect
+      .poll(
+        async () => (await page.evaluate(() => window.cyberHorse.getMediaQueueSummary())).active,
+      )
+      .toBe(0)
+    await page.evaluate(() => window.cyberHorse.clearMediaTasks())
     await run('查看详情：测试影片 ABC-123')
     slow = true
     await page.locator('.media-more-actions > summary').click()
@@ -1100,6 +1158,24 @@ export async function verifyMediaLibrary(app, page, output) {
     await run('删除媒体')
     await expect(wall()).toHaveCount(30)
     expect(deleted.has('v1')).toBe(true)
+    const deleteCard = page.getByRole('button', { name: '查看详情：测试影片 3', exact: true })
+    const deleteMenu = page.getByRole('dialog', { name: '快捷操作：测试影片 3', exact: true })
+    await app.evaluate(() => {
+      globalThis.confirmMediaDelete = 0
+    })
+    await deleteCard.click({ button: 'right' })
+    await expect(deleteMenu.getByRole('button', { name: '删除媒体' })).toBeEnabled()
+    await deleteMenu.getByRole('button', { name: '删除媒体' }).click()
+    await expect(deleteCard).toBeVisible()
+    expect(deleted.has('v3')).toBe(false)
+    await app.evaluate(() => {
+      globalThis.confirmMediaDelete = 1
+    })
+    await deleteCard.click({ button: 'right' })
+    await deleteMenu.getByRole('button', { name: '删除媒体' }).click()
+    await expect(deleteCard).toHaveCount(0)
+    await expect.poll(() => deleted.has('v3')).toBe(true)
+    await expect(page.locator('.media-detail')).toHaveCount(0)
     await run('刷新媒体库')
     await expect(page.getByRole('status')).toContainText('提交刷新请求')
     const invalid = await page.evaluate(async () => {

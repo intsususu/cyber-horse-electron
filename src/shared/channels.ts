@@ -3,6 +3,7 @@ export const channels = {
   openMediaPlayback: 'media:open-playback',
   closeMediaPlayback: 'media:close-playback',
   reportMediaPlaybackError: 'media:playback-error',
+  enqueueMediaProcess: 'media:enqueue-process',
   previewMediaProcess: 'media:preview-process',
   startMediaProcess: 'media:start-process',
   getMediaProcesses: 'media:processes',
