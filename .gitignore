@@ -1,0 +1,15 @@
+node_modules/
+out/
+dist/
+release/
+coverage/
+.vite/
+test-results/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+# 本机项目默认配置包含用户指定路径与凭据，不提交到版本库。
+config/default-settings.json

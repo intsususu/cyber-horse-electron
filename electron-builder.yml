@@ -1,0 +1,22 @@
+appId: app.cyberhorse.desktop
+productName: Cyber Horse
+directories:
+  output: release
+files:
+  - out/**/*
+  - package.json
+  - config/default-settings.json
+  - assets/**/*
+asar: true
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: Cyber Horse
+portable:
+  artifactName: Cyber-Horse-${version}-${arch}-portable.${ext}
+artifactName: Cyber-Horse-${version}-${arch}.${ext}

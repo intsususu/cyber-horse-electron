@@ -1,0 +1,57 @@
+import { contextBridge, ipcRenderer } from 'electron'
+import type { DesktopApi } from '../shared/contracts'
+import { channels } from '../shared/channels'
+
+const api: DesktopApi = {
+  openMediaLink: (request) => ipcRenderer.invoke(channels.openMediaLink, request),
+  openMediaPlayback: (request) => ipcRenderer.invoke(channels.openMediaPlayback, request),
+  closeMediaPlayback: (token) => ipcRenderer.invoke(channels.closeMediaPlayback, token),
+  reportMediaPlaybackError: (request) =>
+    ipcRenderer.invoke(channels.reportMediaPlaybackError, request),
+  previewMediaProcess: (request) => ipcRenderer.invoke(channels.previewMediaProcess, request),
+  startMediaProcess: (id) => ipcRenderer.invoke(channels.startMediaProcess, id),
+  getMediaProcesses: () => ipcRenderer.invoke(channels.getMediaProcesses),
+  getMediaQueueSummary: () => ipcRenderer.invoke(channels.getMediaQueueSummary),
+  cancelMediaProcess: (id) => ipcRenderer.invoke(channels.cancelMediaProcess, id),
+  clearMediaTasks: () => ipcRenderer.invoke(channels.clearMediaTasks),
+  getMediaLibraries: () => ipcRenderer.invoke(channels.getMediaLibraries),
+  getMediaPage: (query) => ipcRenderer.invoke(channels.getMediaPage, query),
+  getMediaDetail: (id) => ipcRenderer.invoke(channels.getMediaDetail, id),
+  getMediaSimilar: (id) => ipcRenderer.invoke(channels.getMediaSimilar, id),
+  getMediaImage: (request) => ipcRenderer.invoke(channels.getMediaImage, request),
+  setMediaFavorite: (request) => ipcRenderer.invoke(channels.setMediaFavorite, request),
+  refreshMediaItem: (id) => ipcRenderer.invoke(channels.refreshMediaItem, id),
+  deleteMediaItem: (id) => ipcRenderer.invoke(channels.deleteMediaItem, id),
+  startMediaDownload: (request) => ipcRenderer.invoke(channels.startMediaDownload, request),
+  getMediaDownloads: () => ipcRenderer.invoke(channels.getMediaDownloads),
+  cancelMediaDownload: (id) => ipcRenderer.invoke(channels.cancelMediaDownload, id),
+  previewPipeline: (request) => ipcRenderer.invoke(channels.previewPipeline, request),
+  startPipeline: (request) => ipcRenderer.invoke(channels.startPipeline, request),
+  getPipelineState: () => ipcRenderer.invoke(channels.getPipelineState),
+  cancelPipeline: () => ipcRenderer.invoke(channels.cancelPipeline),
+  previewPreparation: () => ipcRenderer.invoke(channels.previewPreparation),
+  startPreparation: (request) => ipcRenderer.invoke(channels.startPreparation, request),
+  getPreparationState: () => ipcRenderer.invoke(channels.getPreparationState),
+  cancelPreparation: () => ipcRenderer.invoke(channels.cancelPreparation),
+  getSettings: () => ipcRenderer.invoke(channels.getSettings),
+  getSettingsLocation: () => ipcRenderer.invoke(channels.getSettingsLocation),
+  openSettingsFile: () => ipcRenderer.invoke(channels.openSettingsFile),
+  onSettingsChanged: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, result: Parameters<typeof listener>[0]) =>
+      listener(result)
+    ipcRenderer.on(channels.settingsChanged, handler)
+    return () => ipcRenderer.removeListener(channels.settingsChanged, handler)
+  },
+  saveSettings: (settings) => ipcRenderer.invoke(channels.saveSettings, settings),
+  choosePath: (key) => ipcRenderer.invoke(channels.choosePath, key),
+  choosePreferencePath: (key) => ipcRenderer.invoke(channels.choosePreferencePath, key),
+  getCredentialStatus: () => ipcRenderer.invoke(channels.getCredentialStatus),
+  saveCredential: (password) => ipcRenderer.invoke(channels.saveCredential, password),
+  checkPaths: () => ipcRenderer.invoke(channels.checkPaths),
+  chooseInputs: (request) => ipcRenderer.invoke(channels.chooseInputs, request),
+  refreshInputs: (request) => ipcRenderer.invoke(channels.refreshInputs, request),
+  openWorkDirectory: (source) => ipcRenderer.invoke(channels.openWorkDirectory, source),
+  getPerformance: () => ipcRenderer.invoke(channels.getPerformance),
+  windowControl: (action) => ipcRenderer.invoke(channels.windowControl, action),
+}
+contextBridge.exposeInMainWorld('cyberHorse', api)
