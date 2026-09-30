@@ -19,7 +19,7 @@
     "preview": "electron-vite preview",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder --win nsis",
-    "dist:portable": "npm run build && electron-builder --win portable --x64",
+    "dist:portable": "npm run build && electron-builder --win portable --x64 --config.electronDist=node_modules/electron/dist",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "npm run typecheck && npm test && npm run build"
