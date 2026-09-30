@@ -393,6 +393,41 @@ export async function verifyPipeline(app, page, output) {
     await expect(page.locator('.input-file-row').filter({ hasText: 'LIVE-002-U.mkv' })).toHaveCount(
       1,
     )
+    // MDC 单文件失败后，其余文件仍通过真实 IPC 与工具进程进入 NAS。
+    await writeFile(media('PART-001.mp4'), original)
+    await writeFile(media('PART-002.mp4'), original)
+    await writeFile(join(toolDirectory, 'fail-mdc-PART-001.txt'), '模拟番号未找到')
+    await run('刷新')
+    await selectOnly('PART-001.mp4')
+    await page.getByRole('checkbox', { name: '勾选 PART-002.mp4', exact: true }).check()
+    for (const step of stepNames) {
+      if (['元数据刮削', '归档到 NAS'].includes(step)) await choice(step).check()
+      else await choice(step).uncheck()
+    }
+    await run('运行所选 2 步')
+    await expect(dialog()).toContainText('仅选中文件 · 2 个视频')
+    await run('确认运行所选步骤')
+    await expect
+      .poll(async () => (await page.evaluate(() => window.cyberHorse.getPipelineState())).status)
+      .toBe('failed')
+    const partial = await page.evaluate(() => window.cyberHorse.getPipelineState())
+    expect(partial.tasks[0]).toMatchObject({ status: 'failed', completed: 1, failed: 1, total: 2 })
+    expect(partial.tasks[1]).toMatchObject({ status: 'succeeded', completed: 1, total: 1 })
+    expect(await readFile(media('PART-001.mp4'), 'utf8')).toBe(original)
+    expect(await readFile(join(paths.nas, 'PART-002', 'PART-002.mp4'), 'utf8')).toBe(original)
+    await run('任务队列')
+    await page.getByRole('tab', { name: /^未完成/ }).click()
+    await expect(page.locator('.task-row')).toContainText('部分失败')
+    await page.locator('.task-row').getByText('处理结果与执行记录').click()
+    await expect(page.locator('.task-row')).toContainText('PART-001.mp4')
+    for (const theme of ['初号机主题', '深色模式']) {
+      await run(theme)
+      await page.screenshot({
+        path: join(output, `MDC部分失败-${theme}.png`),
+        scale: 'css',
+        animations: 'disabled',
+      })
+    }
     await writeFile(
       join(output, 'pipeline-desktop-result.json'),
       JSON.stringify(
@@ -409,6 +444,7 @@ export async function verifyPipeline(app, page, output) {
           toolProgress: true,
           progressReload: true,
           refreshAfterEachFile: true,
+          scrapePartialArchive: true,
         },
         null,
         2,

@@ -53,6 +53,7 @@ export const mediaImageSchema = z
 export type MediaQuery = z.infer<typeof mediaQuerySchema>
 export type MediaImageRequest = z.infer<typeof mediaImageSchema>
 export type MediaNamed = { id: string; name: string }
+export type MediaDeletionConfirmation = MediaNamed & { token: string }
 export type MediaLibrary = MediaNamed & { collectionType: string }
 export type LibraryVideo = MediaNamed & {
   overview: string
@@ -156,7 +157,8 @@ export interface MediaLibraryApi {
   getMediaImage(request: MediaImageRequest): Promise<string | null>
   setMediaFavorite(request: { id: string; favorite: boolean }): Promise<boolean>
   refreshMediaItem(id: string): Promise<void>
-  deleteMediaItem(id: string): Promise<boolean>
+  prepareMediaDeletion(id: string): Promise<MediaDeletionConfirmation>
+  deleteMediaItem(token: string): Promise<boolean>
   startMediaDownload(request: { id: string; sourceId: string }): Promise<MediaDownload>
   getMediaDownloads(): Promise<MediaDownload[]>
   cancelMediaDownload(id: string): Promise<void>
@@ -176,6 +178,8 @@ export type MediaProcessPlan = {
 }
 export type MediaProcessState = MediaProcessPlan & {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  startedAt?: string
+  endedAt?: string
   message: string
   pipeline: import('./pipeline').PipelineState | null
   downloadId: string

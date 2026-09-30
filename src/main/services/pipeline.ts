@@ -15,6 +15,7 @@ import { canonicalVideoName } from './video-name'
 import { ExecutionLock } from './execution-lock'
 import {
   PipelineTools,
+  MdcItemFailure,
   requiredTools,
   verifyCheckedTool,
   type CheckedTools,
@@ -339,6 +340,7 @@ export class PipelineService {
         journal,
         outputs: [],
         resultFiles: [],
+        failures: [],
       }
       this.work = this.execute(plan, settings, file, signal).finally(() => {
         this.busy = false
@@ -364,6 +366,7 @@ export class PipelineService {
     let active = this.state!.tasks[0]!,
       serial = 0,
       loggedBytes = 0,
+      logsTruncated = false,
       logFailure = false
     let journalQueue = Promise.resolve()
     const record = (value: unknown) => {
@@ -373,7 +376,7 @@ export class PipelineService {
       })
       return journalQueue
     }
-    const log = (text: string, warning = false, persist = true) => {
+    const log = (text: string, warning = false) => {
       const entry = {
         id: ++serial,
         time: timestamp(),
@@ -381,9 +384,19 @@ export class PipelineService {
         text: redactToolLine(text),
       }
       this.state!.logs = [...this.state!.logs.slice(-199), entry]
-      if (persist && loggedBytes < 2 * 1024 * 1024) {
+      if (loggedBytes + Buffer.byteLength(entry.text) <= 2 * 1024 * 1024 && !logsTruncated) {
         loggedBytes += Buffer.byteLength(entry.text)
         void record({ type: 'log', entry }).catch(() => {
+          logFailure = true
+          this.controller?.abort()
+        })
+      } else if (!logsTruncated) {
+        logsTruncated = true
+        void record({
+          type: 'log-truncated',
+          at: timestamp(),
+          message: '工具文本日志达到 2 MiB 上限，后续文本未保存；步骤结果和文件操作事件继续记录。',
+        }).catch(() => {
           logFailure = true
           this.controller?.abort()
         })
@@ -392,7 +405,22 @@ export class PipelineService {
     const deleteSources = async (files: string[], root: string, stamps: Map<string, FileStamp>) => {
       for (const path of new Set(files)) {
         await record({ type: 'deleting', source: path, root })
-        await removeChecked(path, root, stamps.get(path)!, signal)
+        try {
+          await removeChecked(path, root, stamps.get(path)!, signal)
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code
+          await record({ type: 'delete-failed', source: path, code: code ?? null })
+          if (signal.aborted) throw error
+          const detail =
+            code === 'ENOENT'
+              ? '原文件已不在预期位置'
+              : code
+                ? `系统错误 ${code}`
+                : failureText(error)
+          throw new Error(
+            `清理原文件 ${basename(path)} 失败：${detail}；请核对执行记录与已发布产物。`,
+          )
+        }
         await record({ type: 'deleted', source: path })
       }
     }
@@ -552,18 +580,28 @@ export class PipelineService {
     }
     let finalStatus: PipelineState['status'] = 'succeeded',
       message = '所选步骤处理完成。'
+    const failedScrapes = new Set<number>()
     try {
       for (const task of this.state!.tasks) {
         active = task
         checkpoint(signal)
+        if (task.id !== 'scrape' && failedScrapes.size) task.total -= failedScrapes.size
+        if (task.total === 0) {
+          task.status = 'skipped'
+          task.endedAt = timestamp()
+          task.message = '没有通过 MDC 校验的文件，本步未执行'
+          await record({ type: 'step-completed', task })
+          continue
+        }
         task.status = 'running'
         task.startedAt = timestamp()
-        log(`开始${task.title}，共 ${items.length} 个文件。`)
+        log(`开始${task.title}，共 ${task.total} 个文件。`)
         const archiveSources: MediaItem[] = []
         const archiveStamps = new Map<string, FileStamp>()
         const archiveTargets: { path: string; size: number }[] = []
         const publishedTargets = new Set<string>()
         for (let index = 0; index < items.length; index++) {
+          if (failedScrapes.has(index)) continue
           checkpoint(signal)
           task.current = { phase: 'prepare', percent: null }
           const item = items[index]!
@@ -638,17 +676,40 @@ export class PipelineService {
           } else {
             if (task.id === 'scrape') {
               task.current = { phase: 'scrape', percent: null }
-              const produced = await this.tools.scrape(
-                plan.tools,
-                item.video,
-                plan.roots.scrape!,
-                signal,
-                (line, warning) => {
-                  log(line, warning, false)
-                  if (warning) console.warn(redactToolLine(line))
-                  else console.log(redactToolLine(line))
-                },
-              )
+              let produced: string[]
+              try {
+                produced = await this.tools.scrape(
+                  plan.tools,
+                  item.video,
+                  plan.roots.scrape!,
+                  signal,
+                  (line, warning) => {
+                    log(line, warning)
+                    if (warning) console.warn(redactToolLine(line))
+                    else console.log(redactToolLine(line))
+                  },
+                )
+              } catch (error) {
+                if (signal.aborted || logFailure || !(error instanceof MdcItemFailure)) throw error
+                const reason = failureText(error)
+                failedScrapes.add(index)
+                task.failed = (task.failed ?? 0) + 1
+                task.progress = Math.floor(((task.completed + task.failed) / task.total) * 100)
+                task.current = undefined
+                this.state!.failures!.push({ step: 'scrape', file: item.video, reason })
+                await record({
+                  type: 'file-failed',
+                  step: 'scrape',
+                  index,
+                  source: item.video,
+                  reason,
+                })
+                log(
+                  `${basename(item.video)} 刮削失败，跳过后续步骤：${reason}；请核对源目录与 MDC 输出目录。`,
+                  true,
+                )
+                continue
+              }
               const video = produced.find(isVideo)!
               if (!video || produced.some((path) => !inside(plan.roots.scrape!, path)))
                 throw new Error('MDC 产物超出已配置的输出目录。')
@@ -787,7 +848,7 @@ export class PipelineService {
           }
           await record({ type: 'completed', step: task.id, index, output: items[index] })
           task.completed++
-          task.progress = Math.floor((task.completed / task.total) * 100)
+          task.progress = Math.floor(((task.completed + (task.failed ?? 0)) / task.total) * 100)
           task.current = undefined
           log(`${task.title}已校验 ${task.completed}/${task.total} 个文件。`)
         }
@@ -812,14 +873,25 @@ export class PipelineService {
             )
           }
         }
-        task.status = task.skipped === task.total ? 'skipped' : 'succeeded'
+        task.status = task.failed ? 'failed' : task.skipped === task.total ? 'skipped' : 'succeeded'
         task.current = undefined
         task.endedAt = timestamp()
-        task.message =
-          task.status === 'skipped'
+        task.message = task.failed
+          ? `完成 ${task.completed}/${task.total} 项，失败 ${task.failed} 项；失败文件未进入后续步骤`
+          : task.status === 'skipped'
             ? '全部文件已有对应标记，未调用处理工具'
             : `完成 ${task.completed} 项，其中跳过 ${task.skipped} 项`
         await record({ type: 'step-completed', task })
+      }
+      if (failedScrapes.size) {
+        finalStatus = 'failed'
+        const failures = this.state!.failures!
+        message =
+          failures.length === 1 && items.length === 1
+            ? failures[0]!.reason
+            : failedScrapes.size === items.length
+              ? `MDC 刮削全部 ${items.length} 项失败，后续步骤未执行；请查看失败文件记录。`
+              : `MDC 刮削成功 ${items.length - failedScrapes.size}/${items.length} 项，失败 ${failedScrapes.size} 项；成功文件已继续执行所选后续步骤。`
       }
     } catch (error) {
       finalStatus = signal.aborted && !logFailure ? 'cancelled' : 'failed'
@@ -845,6 +917,7 @@ export class PipelineService {
           tasks: this.state!.tasks,
           outputs: this.state!.outputs,
           resultFiles: items.flatMap((item) => item.files),
+          failures: this.state!.failures,
         })
         await journalQueue
       } catch {

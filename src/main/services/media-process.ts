@@ -15,6 +15,7 @@ import { PipelineService } from './pipeline'
 import { PipelineTools } from './pipeline-tools'
 import { mediaExtensions } from './media-inputs'
 import { canonicalVideoName } from './video-name'
+import { redactToolLine } from './tool-process'
 import {
   checkpoint,
   availablePath,
@@ -348,20 +349,35 @@ export class MediaProcessService {
     signal: AbortSignal,
   ) {
     let journal: Awaited<ReturnType<typeof open>> | undefined
-    const write = async (value: unknown) => {
+    const write = async (value: Record<string, unknown>) => {
       if (journal) {
-        await journal.writeFile(JSON.stringify(value) + '\n')
+        await journal.writeFile(JSON.stringify({ at: new Date().toISOString(), ...value }) + '\n')
         await journal.sync()
       }
     }
+    const report = async (text: string) => {
+      record.message = text
+      await write({
+        type: '日志',
+        entry: { time: new Date().toISOString(), level: 'info', text: redactToolLine(text) },
+      })
+    }
     record.status = 'running'
+    record.startedAt = new Date().toISOString()
     try {
       await mkdir(dirname(record.journal), { recursive: true })
       journal = await open(record.journal, 'wx')
+      await write({
+        type: '开始',
+        id: record.id,
+        name: record.name,
+        kind: record.kind,
+        startedAt: record.startedAt,
+      })
       let plan: Plan
       if ('public' in queued) plan = queued
       else {
-        record.message = '正在读取影片信息并检查 NAS 文件及处理工具。'
+        await report('正在读取影片信息并检查 NAS 文件及处理工具。')
         const preview = await this.preview(queued.itemId, queued.sourceId, queued.kind, signal)
         plan = this.plans.get(preview.id)!
         this.plans.delete(preview.id)
@@ -380,13 +396,14 @@ export class MediaProcessService {
         throw new Error('服务器连接或处理配置已变化，请重新提交任务。')
       for (const [path, stamp] of plan.stamps) await unchanged(path, stamp)
       checkpoint(signal)
-      record.message = '正在下载并校验所选媒体版本。'
+      await report('正在下载并校验所选媒体版本。')
       const download = await this.downloads.start(record.itemId, record.sourceId)
       record.downloadId = download.id
       while (true) {
         if (signal.aborted) this.downloads.cancel(download.id)
         const job = (await this.downloads.snapshot()).find((v) => v.id === download.id)!
         if (!['running', 'cancelling'].includes(job.status)) {
+          await write({ type: '下载结果', download: job })
           checkpoint(signal)
           if (job.status !== 'completed') throw new Error(job.message)
           download.path = job.path
@@ -427,7 +444,8 @@ export class MediaProcessService {
         settings.paths.preprocess,
       )
       checkpoint(signal)
-      record.message = '正在处理本次下载的文件。'
+      await report('正在处理本次下载的文件。')
+      await write({ type: '处理记录', pipelineId: pipelinePlan.id })
       await this.processor.start(pipelinePlan.id, settings, settings.paths.preprocess)
       await this.processor.wait()
       checkpoint(signal)
@@ -448,12 +466,12 @@ export class MediaProcessService {
         plan.generation !== this.client.generation
       )
         throw new Error('处理期间配置或连接已变化，产物已保留，未回写。')
-      record.message = '正在校验并回写媒体，完成后清理旧文件。'
+      await report('正在校验并回写媒体，完成后清理旧文件。')
       await this.replace(plan, record, outputs, packageRoot, signal, write)
       for (const path of outputs)
         await removeChecked(path, settings.paths.mdcOutput, await fileStamp(path), signal)
       for (const path of outputs) await removeEmptyParents(dirname(path), settings.paths.mdcOutput)
-      record.message = '媒体回写完成，正在刷新 Emby。'
+      await report('媒体回写完成，正在刷新 Emby。')
       checkpoint(signal)
       await this.client.refresh(record.itemId, plan.generation)
       record.status = 'completed'
@@ -466,6 +484,16 @@ export class MediaProcessService {
           ? error.message
           : '媒体任务失败，请按执行记录核对源目录和输出目录。'
     } finally {
+      record.endedAt = new Date().toISOString()
+      if (this.processor) record.pipeline = this.processor.snapshot()
+      await write({
+        type: '日志',
+        entry: {
+          time: record.endedAt,
+          level: record.status === 'completed' ? 'success' : 'warning',
+          text: redactToolLine(record.message),
+        },
+      }).catch(() => {})
       await write({ type: '结果', record }).catch(() => {})
       await journal?.close().catch(() => {})
     }
@@ -476,7 +504,7 @@ export class MediaProcessService {
     outputs: string[],
     packageRoot: string,
     signal: AbortSignal,
-    write: (value: unknown) => Promise<void>,
+    write: (value: Record<string, unknown>) => Promise<void>,
   ) {
     const parent = await safeRoot(dirname(record.original), this.protectedPaths)
     const targets = outputs.map((path) => {

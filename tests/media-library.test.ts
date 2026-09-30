@@ -111,6 +111,18 @@ async function fixture() {
         parsed.pathname.endsWith('/stream.mp4') ||
         parsed.pathname.endsWith('/stream.mkv')
       ) {
+        if (mode === '连接等待')
+          return new Promise<Response>((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+              once: true,
+            })
+          })
+        if (mode === '连接重置')
+          throw new TypeError('fetch failed', {
+            cause: Object.assign(new Error('https://private.invalid/?token=不可输出'), {
+              code: 'ECONNRESET',
+            }),
+          })
         if (mode === '中断') return new Response(payload.subarray(0, 2))
         if (mode === '慢速')
           return new Response(
@@ -445,6 +457,84 @@ describe('媒体库网络契约', () => {
   })
 })
 describe('媒体库下载保护', () => {
+  it.each(['连接等待', '慢速'])('%s时无数据超时显示为失败，不误报用户取消', async (mode) => {
+    const f = await fixture()
+    f.mode(mode)
+    const schedule = globalThis.setTimeout
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+      ...args: Parameters<typeof setTimeout>
+    ) => {
+      if (args[1] === 60000) args[1] = 100
+      return schedule(...args)
+    }) as typeof setTimeout)
+    const started = await f.downloads.start('v1', 's1')
+    const [job] = await waitDownloads(f.downloads)
+    expect(job?.status).toBe('failed')
+    expect(job?.message).toContain('60 秒没有数据')
+    expect(job?.message).not.toContain('取消')
+    if (mode === '慢速') {
+      expect(await readFile(started.temporary)).toEqual(payload.subarray(0, 2))
+      expect(job?.message).toContain('临时文件已保留')
+    } else {
+      expect(await readdir(f.settings.paths.download)).toEqual([])
+      expect(job?.message).not.toContain('临时文件已保留')
+    }
+  })
+  it('认证失效导致流中断时说明连接变化，不误报用户取消', async () => {
+    const f = await fixture()
+    f.mode('慢速')
+    const started = await f.downloads.start('v1', 's1')
+    await vi.waitFor(async () => expect((await f.downloads.snapshot())[0]?.received).toBe(2))
+    f.client.invalidate()
+    const [job] = await waitDownloads(f.downloads)
+    expect(job?.status).toBe('failed')
+    expect(job?.message).toContain('连接或认证已变化')
+    expect(await readFile(started.temporary)).toEqual(payload.subarray(0, 2))
+  })
+  it('显示连接重置错误码但不泄露底层地址和令牌', async () => {
+    const f = await fixture()
+    f.mode('连接重置')
+    await f.downloads.start('v1', 's1')
+    const [job] = await waitDownloads(f.downloads)
+    expect(job?.status).toBe('failed')
+    expect(job?.message).toContain('ECONNRESET')
+    expect(job?.message).toContain('连接被服务器或中间网络设备重置')
+    expect(job?.message).not.toMatch(/private|token|不可输出/)
+  })
+  it('磁盘空间不足时给出具体原因并保留临时文件', async () => {
+    const f = await fixture()
+    const originalOpen = fs.open
+    vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const file = await originalOpen(...args)
+      if (String(args[0]).endsWith('.download')) {
+        vi.spyOn(file, 'write').mockRejectedValue(
+          Object.assign(new Error('no space left'), { code: 'ENOSPC' }),
+        )
+      }
+      return file
+    })
+    const started = await f.downloads.start('v1', 's1')
+    const [job] = await waitDownloads(f.downloads)
+    expect(job?.status).toBe('failed')
+    expect(job?.message).toContain('磁盘空间不足')
+    expect(job?.message).toContain('ENOSPC')
+    expect(await readdir(f.settings.paths.download)).toEqual([basename(started.temporary)])
+  })
+  it('下载流持续传输时不受普通接口的 20 秒超时影响', async () => {
+    const f = await fixture()
+    await f.client.detail('v1')
+    const metadataTimeout = new AbortController()
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation((milliseconds) => {
+      if (milliseconds === 20000) return metadataTimeout.signal
+      return new AbortController().signal
+    })
+    const response = await f.client.stream('v1', 's1', new AbortController().signal)
+    const streamRequest = f.calls.filter((call) => call.url.pathname.endsWith('/stream')).at(-1)!
+    metadataTimeout.abort()
+    expect(streamRequest.init.signal?.aborted).toBe(false)
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(payload)
+    expect(timeout).not.toHaveBeenCalledWith(20000)
+  })
   it('完整下载安全发布，重名保留旧文件并持久化结果', async () => {
     const f = await fixture()
     await writeFile(join(f.settings.paths.download, 'ABC-123.mp4'), '旧文件')
@@ -571,9 +661,17 @@ describe('媒体库复合任务', () => {
     expect(second.alreadyQueued).toBe(false)
     expect(f.service.queueSummary().active).toBe(2)
     await vi.waitFor(() => expect(detail).toHaveBeenCalledTimes(1))
+    expect(f.service.snapshot().find((record) => record.id === first.id)?.startedAt).toBeTruthy()
+    expect(f.service.snapshot().find((record) => record.id === first.id)?.endedAt).toBeUndefined()
     expect(f.service.snapshot().find((record) => record.id === second.id)?.status).toBe('pending')
+    expect(
+      f.service.snapshot().find((record) => record.id === second.id)?.startedAt,
+    ).toBeUndefined()
     f.service.cancel(second.id)
     expect(f.service.snapshot().find((record) => record.id === second.id)?.status).toBe('cancelled')
+    expect(
+      f.service.snapshot().find((record) => record.id === second.id)?.startedAt,
+    ).toBeUndefined()
     release()
     await vi.waitFor(() => expect(f.service.active).toBe(false))
     expect(f.service.snapshot().find((record) => record.id === first.id)?.message).toContain(
@@ -589,6 +687,9 @@ describe('媒体库复合任务', () => {
     const first = f.service.enqueue({ id: 'v1', kind: 'video', name: '测试影片' })
     await vi.waitFor(() => expect(f.service.active).toBe(false))
     expect(f.service.snapshot()[0]?.status).toBe('failed')
+    expect(Date.parse(f.service.snapshot()[0]!.endedAt!)).toBeGreaterThanOrEqual(
+      Date.parse(f.service.snapshot()[0]!.startedAt!),
+    )
     expect(f.service.snapshot()[0]?.message).toContain('未在已配置的 NAS')
     const retry = f.service.enqueue({ id: 'v1', kind: 'video', name: '测试影片' })
     expect(retry.alreadyQueued).toBe(false)
@@ -612,6 +713,9 @@ describe('媒体库复合任务', () => {
     f.service.cancel(queued.id)
     await vi.waitFor(() => expect(f.service.active).toBe(false))
     expect(f.service.snapshot()[0]?.status).toBe('cancelled')
+    expect(Date.parse(f.service.snapshot()[0]!.endedAt!)).toBeGreaterThanOrEqual(
+      Date.parse(f.service.snapshot()[0]!.startedAt!),
+    )
     expect(await f.downloads.snapshot()).toEqual([])
     expect(await readFile(f.original)).toEqual(payload)
   })
@@ -623,6 +727,25 @@ describe('媒体库复合任务', () => {
     const record = f.service.snapshot()[0]!
     expect(record.id).toBe(queued.id)
     expect(record.status, record.message).toBe('completed')
+    expect(Date.parse(record.endedAt!)).toBeGreaterThanOrEqual(Date.parse(record.startedAt!))
+    const events = (await readFile(record.journal, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const result = events.find((event) => event.type === '结果')
+    expect(events.find((event) => event.type === '处理记录').pipelineId).toBe(record.pipeline!.id)
+    expect(events.find((event) => event.type === '下载结果').download.status).toBe('completed')
+    expect(
+      events.filter((event) => event.type === '日志').map((event) => event.entry.text),
+    ).toEqual(
+      expect.arrayContaining([
+        '正在下载并校验所选媒体版本。',
+        '正在处理本次下载的文件。',
+        record.message,
+      ]),
+    )
+    expect(result.record.startedAt).toBe(record.startedAt)
+    expect(result.record.endedAt).toBe(record.endedAt)
     expect(record.sourceId).toBe('s1')
     expect(record.original).toBe(f.original)
   })

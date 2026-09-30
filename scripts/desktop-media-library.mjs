@@ -58,11 +58,12 @@ export async function verifyMediaLibrary(app, page, output) {
   let subtitleFailures = 0
   let delayPlaybackDetail = false
   let queueDetailGate = null
+  let deletionTitle = ''
   const item = (id) => ({
     Id: id,
     Name:
       id === 'v1'
-        ? '测试影片 ABC-123'
+        ? deletionTitle || '测试影片 ABC-123'
         : id === 'v42'
           ? '东营文化：测试影片 42'
           : `测试影片 ${id.slice(1)}`,
@@ -312,7 +313,6 @@ export async function verifyMediaLibrary(app, page, output) {
     )
     await app.evaluate(({ dialog, shell }, original) => {
       globalThis.mediaOriginalDialog = dialog.showOpenDialog
-      globalThis.mediaOriginalMessage = dialog.showMessageBox
       globalThis.mediaOriginalOpenExternal = shell.openExternal
       globalThis.mediaOpenedLinks = []
       shell.openExternal = async (url) => {
@@ -324,10 +324,6 @@ export async function verifyMediaLibrary(app, page, output) {
         globalThis.mediaFileDialogCount++
         return { canceled: false, filePaths: [original] }
       }
-      dialog.showMessageBox = async () => ({
-        response: globalThis.confirmMediaDelete ?? 0,
-        checkboxChecked: false,
-      })
     }, original)
     await app.evaluate(({ BrowserWindow }) => {
       const w = BrowserWindow.getAllWindows()[0]
@@ -1052,6 +1048,66 @@ export async function verifyMediaLibrary(app, page, output) {
     ).toContainText('媒体处理与回写完成', { timeout: 45000 })
     const processes = await page.evaluate(() => window.cyberHorse.getMediaProcesses())
     expect(processes[0].status).toBe('completed')
+    await app.evaluate(({ shell }) => {
+      globalThis.previousRecordOpenPath = shell.openPath
+      globalThis.openedExecutionRecords = []
+      globalThis.failExecutionRecordOpen = false
+      shell.openPath = async (path) => {
+        globalThis.openedExecutionRecords.push(path)
+        return globalThis.failExecutionRecordOpen ? '测试打开失败' : ''
+      }
+    })
+    const completedProcess = page.locator('.media-download-task').filter({ hasText: '视频破解' })
+    await completedProcess.locator(':scope > details > summary').click()
+    await completedProcess.locator('.queue-records > summary').click()
+    const recordLink = completedProcess.getByRole('button', { name: '打开执行记录与日志' })
+    await recordLink.click()
+    await expect.poll(() => app.evaluate(() => globalThis.openedExecutionRecords.length)).toBe(1)
+    await expect(recordLink).toBeEnabled()
+    const openedRecord = await app.evaluate(() => globalThis.openedExecutionRecords[0])
+    const recordText = await readFile(openedRecord, 'utf8')
+    expect(recordText).toContain(processes[0].id)
+    expect(recordText).toContain('【执行日志】')
+    expect(recordText).toContain('正在下载并校验所选媒体版本')
+    expect(recordText).toContain('【关联处理执行事件】')
+    expect(recordText).toContain('MDC ·')
+    await app.evaluate(() => {
+      globalThis.failExecutionRecordOpen = true
+    })
+    await recordLink.click()
+    await expect(completedProcess.getByRole('alert')).toContainText('TXT 默认打开程序')
+    await app.evaluate(() => {
+      globalThis.failExecutionRecordOpen = false
+    })
+    await recordLink.click()
+    await expect(recordLink).toBeEnabled()
+    await expect(completedProcess.getByRole('alert')).toHaveCount(0)
+    const invalidRecord = await page.evaluate(async () => {
+      try {
+        await window.cyberHorse.openExecutionRecord({ kind: 'pipeline', id: '../settings' })
+        return ''
+      } catch (error) {
+        return error.message
+      }
+    })
+    expect(invalidRecord).toContain('执行记录标识无效')
+    // 隔离进程模拟页面已更新、后台尚未重启的情况。
+    await app.evaluate(({ ipcMain }) => ipcMain.removeHandler('records:open'))
+    await recordLink.click()
+    await expect(completedProcess.getByRole('alert')).toContainText('完整退出并重新启动应用')
+    await expect(completedProcess.getByRole('alert')).not.toContainText('No handler')
+    for (const theme of ['深色模式', '浅色模式']) {
+      await run(theme)
+      await page.screenshot({
+        path: join(output, `媒体库-执行记录旧后台-${theme}.png`),
+        animations: 'disabled',
+        scale: 'css',
+      })
+    }
+    await run('跟随系统')
+    await app.evaluate(({ shell }) => {
+      shell.openPath = globalThis.previousRecordOpenPath
+    })
     await expect(page.locator('.nav-count')).toHaveCount(0)
     await expect(page.getByRole('button', { name: '清空记录' })).toBeEnabled()
     await run('清空记录')
@@ -1150,29 +1206,70 @@ export async function verifyMediaLibrary(app, page, output) {
     await page.locator('.media-more-actions > summary').click()
     await page.screenshot({ path: join(output, '媒体详情-更多操作.png'), scale: 'css' })
     await run('删除媒体')
+    const deletionDialog = page.getByRole('dialog', { name: '删除服务器媒体', exact: true })
+    await expect(deletionDialog).toBeVisible()
+    await expect(deletionDialog.getByRole('button', { name: '取消', exact: true })).toBeFocused()
+    await page.keyboard.press('Enter')
+    await expect(deletionDialog).toHaveCount(0)
     expect(deleted.size).toBe(0)
-    await app.evaluate(() => {
-      globalThis.confirmMediaDelete = 1
-    })
+    deletionTitle =
+      'ABC-123 ' + '用于验证长标题换行与媒体删除确认弹窗边界的隔离测试影片。'.repeat(10)
+    for (const theme of ['初号机主题', '深色模式', '浅色模式', '跟随系统']) {
+      await page.getByRole('button', { name: theme, exact: true }).click()
+      for (const size of ['默认', '最小', '最大化']) {
+        await app.evaluate(({ BrowserWindow }, size) => {
+          const window = BrowserWindow.getAllWindows()[0]
+          if (window.isMaximized()) window.unmaximize()
+          if (size === '最大化') window.maximize()
+          else window.setSize(size === '最小' ? 1060 : 1480, size === '最小' ? 760 : 900)
+        }, size)
+        await page.locator('.media-more-actions > summary').click()
+        await run('删除媒体')
+        await expect(deletionDialog).toBeVisible()
+        await expect(
+          deletionDialog.getByRole('button', { name: '取消', exact: true }),
+        ).toBeFocused()
+        await expect(deletionDialog.locator('.media-delete-name')).toHaveText(deletionTitle)
+        expect(
+          await deletionDialog.evaluate((element) => {
+            const rect = element.getBoundingClientRect()
+            return (
+              rect.left >= 0 &&
+              rect.top >= 0 &&
+              rect.right <= innerWidth &&
+              rect.bottom <= innerHeight
+            )
+          }),
+        ).toBe(true)
+        await page.screenshot({ path: join(output, `删除确认-${theme}-${size}.png`), scale: 'css' })
+        if (size === '默认') await page.keyboard.press('Escape')
+        else if (size === '最小')
+          await deletionDialog.getByRole('button', { name: '关闭弹窗' }).click()
+        else await deletionDialog.getByRole('button', { name: '取消', exact: true }).click()
+        await expect(deletionDialog).toHaveCount(0)
+        await expect(page.locator('.media-more-actions > summary')).toBeFocused()
+        expect(deleted.size).toBe(0)
+      }
+    }
+    deletionTitle = ''
     await page.locator('.media-more-actions > summary').click()
     await run('删除媒体')
+    await deletionDialog.getByRole('button', { name: '永久删除' }).click()
     await expect(wall()).toHaveCount(30)
     expect(deleted.has('v1')).toBe(true)
     const deleteCard = page.getByRole('button', { name: '查看详情：测试影片 3', exact: true })
     const deleteMenu = page.getByRole('dialog', { name: '快捷操作：测试影片 3', exact: true })
-    await app.evaluate(() => {
-      globalThis.confirmMediaDelete = 0
-    })
     await deleteCard.click({ button: 'right' })
     await expect(deleteMenu.getByRole('button', { name: '删除媒体' })).toBeEnabled()
     await deleteMenu.getByRole('button', { name: '删除媒体' }).click()
+    await expect(deletionDialog).toBeVisible()
+    await page.keyboard.press('Escape')
     await expect(deleteCard).toBeVisible()
+    await expect(deleteCard).toBeFocused()
     expect(deleted.has('v3')).toBe(false)
-    await app.evaluate(() => {
-      globalThis.confirmMediaDelete = 1
-    })
     await deleteCard.click({ button: 'right' })
     await deleteMenu.getByRole('button', { name: '删除媒体' }).click()
+    await deletionDialog.getByRole('button', { name: '永久删除' }).click()
     await expect(deleteCard).toHaveCount(0)
     await expect.poll(() => deleted.has('v3')).toBe(true)
     await expect(page.locator('.media-detail')).toHaveCount(0)
@@ -1249,7 +1346,6 @@ export async function verifyMediaLibrary(app, page, output) {
     await page.evaluate((settings) => window.cyberHorse.saveSettings(settings), saved)
     await app.evaluate(({ dialog, shell }) => {
       dialog.showOpenDialog = globalThis.mediaOriginalDialog
-      dialog.showMessageBox = globalThis.mediaOriginalMessage
       shell.openExternal = globalThis.mediaOriginalOpenExternal
     })
     server.closeAllConnections()

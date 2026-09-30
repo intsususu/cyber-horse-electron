@@ -1,4 +1,4 @@
-import { dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
+import { ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { z } from 'zod'
 import { channels } from '../shared/channels'
 import {
@@ -17,6 +17,7 @@ import { MediaPlayback } from './services/media-playback'
 import { MediaProcessService } from './services/media-process'
 import { EmbyClient } from './services/emby-client'
 import { MediaDownloads } from './services/media-downloads'
+import { MediaDeletion } from './services/media-deletion'
 
 export function registerMediaIpc(
   client: EmbyClient,
@@ -24,7 +25,6 @@ export function registerMediaIpc(
   processes: MediaProcessService,
   playback: MediaPlayback,
   validate: (event: IpcMainInvokeEvent) => void,
-  window: () => BrowserWindow | null,
 ) {
   const bind = <T>(channel: string, schema: z.ZodType<T>, action: (value: T) => unknown) => {
     ipcMain.handle(channel, async (event, ...args: unknown[]) => {
@@ -59,54 +59,9 @@ export function registerMediaIpc(
     client.favorite(request.id, request.favorite),
   )
   bind(channels.refreshMediaItem, mediaIdSchema, (id) => client.refresh(id))
-  let deleting = false
-  bind(channels.deleteMediaItem, mediaIdSchema, async (id) => {
-    if (deleting) throw new Error('请先处理当前删除确认。')
-    deleting = true
-    try {
-      const detail = await client.detail(id)
-      const generation = client.generation
-      if (!detail.canDelete) throw new Error('当前 Emby 账号未获得删除媒体权限。')
-      if (
-        (await downloads.snapshot()).some(
-          (job) => job.itemId === id && ['running', 'cancelling'].includes(job.status),
-        )
-      )
-        throw new Error('此媒体正在下载，请先取消下载再删除。')
-      if (
-        processes
-          .snapshot()
-          .some((job) => job.itemId === id && ['pending', 'running'].includes(job.status))
-      )
-        throw new Error('此媒体正在排队处理，请先取消任务。')
-      const parent = window()
-      if (!parent) return false
-      const result = await dialog.showMessageBox(parent, {
-        type: 'warning',
-        title: '删除服务器媒体',
-        message: `确定从 Emby 删除“${detail.name}”？`,
-        detail: '这可能永久删除服务器上的媒体文件，无法在本应用中恢复。',
-        buttons: ['取消', '永久删除'],
-        defaultId: 0,
-        cancelId: 0,
-        noLink: true,
-      })
-      if (result.response !== 1) return false
-      if (
-        (await downloads.snapshot()).some(
-          (job) => job.itemId === id && ['running', 'cancelling'].includes(job.status),
-        ) ||
-        processes
-          .snapshot()
-          .some((job) => job.itemId === id && ['pending', 'running'].includes(job.status))
-      )
-        throw new Error('确认期间此媒体已启动下载或处理，删除已取消。')
-      await client.delete(id, generation)
-      return true
-    } finally {
-      deleting = false
-    }
-  })
+  const deletion = new MediaDeletion(client, downloads, processes)
+  bind(channels.prepareMediaDeletion, mediaIdSchema, (id) => deletion.prepare(id))
+  bind(channels.deleteMediaItem, z.string().uuid(), (token) => deletion.confirm(token))
   bind(channels.startMediaDownload, mediaDownloadSchema, (request) =>
     downloads.start(request.id, request.sourceId),
   )

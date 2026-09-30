@@ -150,6 +150,7 @@ export class EmbyClient {
         signal.aborted
           ? '请求已取消或超时，请重试。'
           : '无法连接 Emby，请检查服务器地址、网络和证书；不允许跨地址重定向。',
+        { cause: error },
       )
     }
   }
@@ -247,13 +248,18 @@ export class EmbyClient {
     query: Record<string, string> = {},
     method = 'GET',
     signal?: AbortSignal,
+    timeoutMs: number | null = 20000,
   ) {
     const url = new URL(path, session.url)
     url.search = new URLSearchParams(query).toString()
     return this.response(
       url.href,
       { method, headers: { Authorization: authHeader, 'X-Emby-Token': session.token } },
-      AbortSignal.any([session.signal, AbortSignal.timeout(20000), ...(signal ? [signal] : [])]),
+      AbortSignal.any([
+        session.signal,
+        ...(timeoutMs === null ? [] : [AbortSignal.timeout(timeoutMs)]),
+        ...(signal ? [signal] : []),
+      ]),
     )
   }
   private parsePage(data: unknown) {
@@ -501,12 +507,14 @@ export class EmbyClient {
     if (expectedGeneration !== undefined && expectedGeneration !== this.revision)
       throw new Error('服务器连接已变化，请重新下载。')
     if (!s.canDownload) throw new Error('当前 Emby 账号未获得下载权限。')
+    // 下载持续时间由下载服务的无数据超时管理，不能沿用普通接口的总时限。
     return this.request(
       s,
       `Videos/${itemId}/stream`,
       { Static: 'true', MediaSourceId: sourceId },
       'GET',
       signal,
+      null,
     )
   }
   async playback(

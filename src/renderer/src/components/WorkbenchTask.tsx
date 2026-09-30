@@ -2,8 +2,18 @@ import { CircleCheck, ListVideo } from 'lucide-react'
 import type { Workspace } from '../hooks/use-workspace'
 import { statusNames, type DemoTask } from '../lib/workflow'
 import { fileCountLabel, speedLabel, stageLabel } from '../lib/task-progress'
+import { TaskDuration, TaskTiming } from './TaskTiming'
+import { ExecutionRecordLink } from './ExecutionRecordLink'
 
-export function WorkbenchTask({ task, workspace }: { task: DemoTask; workspace: Workspace }) {
+export function WorkbenchTask({
+  task,
+  workspace,
+  now,
+}: {
+  task: DemoTask
+  workspace: Workspace
+  now: number
+}) {
   const { run } = workspace
   const active = task.status === 'running'
   const pending = task.status === 'pending'
@@ -19,10 +29,23 @@ export function WorkbenchTask({ task, workspace }: { task: DemoTask; workspace: 
           <span className="queue-source">工作台{!detail ? ' · 演示' : ''}</span>
           <strong>{task.title}</strong>
         </div>
-        <span className={`task-status ${task.status}`}>
-          {task.status === 'succeeded' && <CircleCheck size={14} />}
-          {active && detail?.status === 'cancelling' ? '正在停止' : statusNames[task.status]}
-        </span>
+        <div className="queue-card-summary">
+          <span className={`task-status ${task.status}`}>
+            {task.status === 'succeeded' && <CircleCheck size={14} />}
+            {active && detail?.status === 'cancelling'
+              ? '正在停止'
+              : task.failed && task.completed
+                ? '部分失败'
+                : statusNames[task.status]}
+          </span>
+          <TaskDuration
+            startedAt={task.startedAt}
+            endedAt={task.endedAt}
+            status={task.status}
+            now={now}
+            total
+          />
+        </div>
       </div>
       {!pending && (
         <div className="queue-progress-copy">
@@ -56,18 +79,20 @@ export function WorkbenchTask({ task, workspace }: { task: DemoTask; workspace: 
           <span style={{ width: `${percent ?? 100}%` }} />
         </div>
       )}
-      {!pending && (
+      {!pending && run.scope && task.total === undefined && (
         <div className="queue-card-meta">
-          <span>
-            {task.startedAt ? `开始于 ${task.startedAt}` : '尚未开始'}
-            {task.endedAt ? ` · 结束于 ${task.endedAt}` : ''}
-          </span>
-          {run.scope && <span>{run.scope.files.length} 个文件</span>}
+          <span>{run.scope.files.length} 个文件</span>
         </div>
       )}
       {detail && !pending && (
         <details className="queue-details">
           <summary>处理结果与执行记录</summary>
+          <TaskTiming
+            startedAt={task.startedAt}
+            endedAt={task.endedAt}
+            status={task.status}
+            now={now}
+          />
           {run.scope && (
             <p>
               {run.scope.mode === 'selected' ? '仅选中文件' : '目录全部视频'} · {run.scope.source}
@@ -82,13 +107,24 @@ export function WorkbenchTask({ task, workspace }: { task: DemoTask; workspace: 
           )}
           {run.pipeline && (
             <>
+              {run.pipeline.failures
+                ?.filter((failure) => failure.step === task.id)
+                .map((failure) => (
+                  <p key={`${failure.step}:${failure.file}`}>
+                    失败文件：{failure.file} · {failure.reason}
+                  </p>
+                ))}
               <p>以下为各步骤提交过的位置；后续步骤成功后会清理对应的本地文件。</p>
               {run.pipeline.outputs.map((path) => (
                 <p key={path}>输出：{path}</p>
               ))}
             </>
           )}
-          <p>执行记录：{detail.journal}</p>
+          <ExecutionRecordLink
+            kind={run.preparation ? 'preparation' : 'pipeline'}
+            id={detail.id}
+            path={detail.journal}
+          />
         </details>
       )}
     </article>

@@ -2,6 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import { ArrowDownToLine, ChevronDown, ChevronUp, Terminal } from 'lucide-react'
 import type { LogEntry } from '../hooks/use-workspace'
 
+function displayTime(value: string): string {
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp)
+    ? new Date(timestamp).toLocaleTimeString('zh-CN', { hour12: false })
+    : value
+}
+
 export function LogsPanel({ logs }: { logs: LogEntry[] }) {
   const [filter, setFilter] = useState<'all' | 'warning'>('all')
   const [expanded, setExpanded] = useState(false)
@@ -96,7 +103,7 @@ export function LogsPanel({ logs }: { logs: LogEntry[] }) {
       >
         {visible.map((log) => (
           <div className="log-line" key={log.id}>
-            <time>{log.time}</time>
+            <time title={log.time}>{displayTime(log.time)}</time>
             <span className={`log-level ${log.level}`}>
               {log.level === 'success' ? '完成' : log.level === 'warning' ? '提示' : '信息'}
             </span>

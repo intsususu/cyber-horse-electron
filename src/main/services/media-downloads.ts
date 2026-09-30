@@ -6,6 +6,34 @@ import type { MediaDownload } from '../../shared/media-library'
 import { EmbyClient } from './emby-client'
 import { availablePath, checkDirectory, safeRoot } from './safe-files'
 
+function downloadError(error: unknown): string {
+  // 只输出已知错误码的中文解释，不记录可能包含令牌、地址的底层异常文本。
+  const messages: Record<string, string> = {
+    ENOSPC: '下载目录所在磁盘空间不足。',
+    EACCES: '没有写入下载目录的权限。',
+    EPERM: '下载文件写入被系统拒绝，请检查权限或文件占用。',
+    EIO: '下载文件写入发生磁盘读写错误。',
+    ECONNRESET: '下载连接被服务器或中间网络设备重置。',
+    ECONNREFUSED: '服务器拒绝下载连接。',
+    ETIMEDOUT: '下载网络连接超时。',
+    UND_ERR_SOCKET: '下载连接意外断开。',
+    UND_ERR_CONNECT_TIMEOUT: '连接下载服务器超时。',
+    UND_ERR_HEADERS_TIMEOUT: '等待下载服务器响应超时。',
+    UND_ERR_BODY_TIMEOUT: '等待下载数据超时。',
+  }
+  let cause = error
+  for (let depth = 0; depth < 5 && cause instanceof Error; depth++) {
+    const code = (cause as NodeJS.ErrnoException).code
+    if (code && Object.hasOwn(messages, code)) return `${messages[code]}（${code}）`
+    if (cause.name === 'TimeoutError') return '下载请求超时。'
+    if (cause.name === 'AbortError') return '下载请求被中断。'
+    cause = cause.cause
+  }
+  return error instanceof Error && /[\u4e00-\u9fff]/.test(error.message)
+    ? error.message
+    : '下载失败，未取得可识别的错误原因。'
+}
+
 export class MediaDownloads {
   private jobs: MediaDownload[] = []
   private active = new Map<string, { controller: AbortController; promise: Promise<void> }>()
@@ -197,9 +225,14 @@ export class MediaDownloads {
     let output: Awaited<ReturnType<typeof open>> | undefined
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
     let idle: ReturnType<typeof setTimeout> | undefined
+    let timedOut = false
+    let temporaryCreated = false
     const resetTimeout = () => {
       clearTimeout(idle)
-      idle = setTimeout(() => controller.abort(new Error('下载连接超过 60 秒没有数据。')), 60000)
+      idle = setTimeout(() => {
+        timedOut = true
+        controller.abort(new Error('下载连接超过 60 秒没有数据。'))
+      }, 60000)
     }
     try {
       resetTimeout()
@@ -209,6 +242,7 @@ export class MediaDownloads {
         controller.signal,
         generation,
       )
+      clearTimeout(idle)
       reader = response.body?.getReader()
       if (!reader) throw new Error('服务器没有返回下载内容。')
       if (/text\/|application\/(json|xml)/i.test(response.headers.get('content-type') ?? ''))
@@ -219,12 +253,14 @@ export class MediaDownloads {
       job.total ??= length
       await checkDirectory(root)
       output = await open(job.temporary, 'wx')
+      temporaryCreated = true
       job.message = '正在下载。'
       while (true) {
         controller.signal.throwIfAborted()
-        const chunk = await reader.read()
-        if (chunk.done) break
         resetTimeout()
+        const chunk = await reader.read()
+        clearTimeout(idle)
+        if (chunk.done) break
         let offset = 0
         while (offset < chunk.value.length) {
           const result = await output.write(chunk.value, offset, chunk.value.length - offset)
@@ -257,16 +293,16 @@ export class MediaDownloads {
       job.status = 'completed'
       job.message = '下载完成，已校验文件大小。'
     } catch (error) {
-      job.status =
-        controller.signal.aborted && !controller.signal.reason?.message?.includes('60 秒')
-          ? 'cancelled'
-          : 'failed'
+      job.status = controller.signal.aborted && !timedOut ? 'cancelled' : 'failed'
       job.message =
         job.status === 'cancelled'
-          ? '下载已取消，临时文件已保留。'
-          : error instanceof Error && /[\u4e00-\u9fff]/.test(error.message)
-            ? error.message
-            : '下载失败，请检查网络、磁盘空间和目录权限；临时文件已保留。'
+          ? '下载已取消。'
+          : timedOut
+            ? '下载连接超过 60 秒没有数据，已停止下载。'
+            : generation !== this.client.generation
+              ? '媒体服务器连接或认证已变化，已停止下载；请重新连接后重试。'
+              : downloadError(error)
+      if (temporaryCreated && !job.message.includes('临时文件')) job.message += ' 临时文件已保留。'
     } finally {
       clearTimeout(idle)
       await reader?.cancel().catch(() => {})

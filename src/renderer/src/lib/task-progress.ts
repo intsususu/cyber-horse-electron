@@ -21,7 +21,7 @@ export function stageLabel(task: DemoTask): string {
 }
 export function fileCountLabel(task: DemoTask): string {
   if (task.total === undefined) return ''
-  return `已完成 ${task.completed ?? 0}/${task.total} 个文件${task.skipped ? `（跳过 ${task.skipped}）` : ''}`
+  return `已完成 ${task.completed ?? 0}/${task.total} 个文件${task.failed ? `，失败 ${task.failed}` : ''}${task.skipped ? `，跳过 ${task.skipped}` : ''}`
 }
 export function speedLabel(current?: PipelineProgress): string {
   if (!current) return ''

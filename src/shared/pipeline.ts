@@ -69,6 +69,7 @@ export type PipelineTask = {
   completed: number
   total: number
   skipped: number
+  failed?: number
   progress: number
   current?: PipelineProgress
   message: string
@@ -95,4 +96,5 @@ export type PipelineState = {
   journal: string
   outputs: string[]
   resultFiles: string[]
+  failures?: { step: PipelineStep; file: string; reason: string }[]
 }

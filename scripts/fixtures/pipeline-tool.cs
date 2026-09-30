@@ -36,6 +36,10 @@ class PipelineTool {
     }
     string modePath = Path.Combine(home, "mode.txt");
     string mode = File.Exists(modePath) ? File.ReadAllText(modePath) : "";
+    if (args.Contains("-cli") && File.Exists(Path.Combine(home, "fail-mdc-" + Path.GetFileNameWithoutExtension(args[1]) + ".txt"))) {
+      Console.Error.WriteLine("未找到番号，隔离测试跳过当前文件");
+      Environment.Exit(9);
+    }
     if (mode == "挂起") { Console.WriteLine("替身等待取消"); Thread.Sleep(60000); }
     if (mode == "失败") { Console.Error.WriteLine("测试失败 token=不应显示"); Environment.Exit(9); }
     Thread.Sleep(500);

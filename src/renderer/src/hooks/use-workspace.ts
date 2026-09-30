@@ -93,10 +93,14 @@ export function useWorkspace() {
     refreshedPreparation.current = result.id
     if (
       result === run.pipeline &&
-      result.status === 'succeeded' &&
+      result.tasks.find((task) => task.id === 'scrape')?.completed &&
       result.tasks.at(-1)?.id === 'scrape'
     )
-      inputs.followScrapeResult(result.resultFiles)
+      inputs.followScrapeResult(
+        result.resultFiles.filter(
+          (path) => !result.failures?.some((failure) => failure.file === path),
+        ),
+      )
     else if (inputs.directory) void inputs.refresh()
   }, [run.preparation, run.pipeline, running, starting, preparation.pending, inputs])
   useEffect(() => {

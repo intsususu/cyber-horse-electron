@@ -23,6 +23,7 @@ import {
   sep,
 } from 'node:path'
 import { homedir } from 'node:os'
+import { setTimeout as wait } from 'node:timers/promises'
 import { isInternalMediaEntry } from '../../shared/media-files'
 
 export type FileStamp = { size: number; mtimeMs: number; ctimeMs: number; ino: number; dev: number }
@@ -252,12 +253,23 @@ export async function removeChecked(
   expected: FileStamp,
   signal: AbortSignal,
 ): Promise<void> {
-  checkpoint(signal)
   if (!inside(root, path) || pathKey(path) === pathKey(root))
     throw new Error('待删除文件超出本次工作目录。')
-  await unchanged(path, expected)
-  checkpoint(signal)
-  await unlink(path)
+  const delays = process.platform === 'win32' ? [150, 300, 600, 1200] : []
+  for (let attempt = 0; ; attempt++) {
+    checkpoint(signal)
+    await unchanged(path, expected)
+    checkpoint(signal)
+    try {
+      await unlink(path)
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (!['EACCES', 'EPERM', 'EBUSY'].includes(code ?? '') || attempt >= delays.length)
+        throw error
+      await wait(delays[attempt], undefined, { signal })
+    }
+  }
 }
 
 /** 同卷独占移动，不产生完整副本；跨卷时校验复制完成后再删除源文件。 */

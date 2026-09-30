@@ -41,6 +41,7 @@ export function TaskPanel({
   const [loading, setLoading] = useState(true)
   const [clearing, setClearing] = useState(false)
   const [tab, setTab] = useState<QueueTab>('active')
+  const [now, setNow] = useState(Date.now)
   const mediaRevision = useRef(0)
   const clearingRef = useRef(false)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -89,6 +90,13 @@ export function TaskPanel({
   const executing = entries.filter(
     (entry) => queueTab(entry) === 'active' && entry.task.status !== 'pending',
   ).length
+  const ticking = executing > 0
+  useEffect(() => {
+    if (!ticking) return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [ticking])
   const anyRunning =
     workspace.running ||
     counts.active > 0 ||
@@ -189,22 +197,35 @@ export function TaskPanel({
           (group) =>
             group.entries.length > 0 && (
               <section className="queue-group" key={group.title} aria-label={group.title}>
-                <h2>
-                  {group.title}
-                  <span>{group.entries.length}</span>
-                </h2>
+                {tab === 'active' && (
+                  <h2>
+                    {group.title}
+                    <span>{group.entries.length}</span>
+                  </h2>
+                )}
                 {group.entries.map((entry) =>
                   entry.kind === 'workbench' ? (
-                    <WorkbenchTask key={entry.id} task={entry.task} workspace={workspace} />
+                    <WorkbenchTask
+                      key={entry.id}
+                      task={entry.task}
+                      workspace={workspace}
+                      now={now}
+                    />
                   ) : entry.kind === 'process' ? (
                     <MediaProcessTask
                       key={entry.id}
                       job={entry.task}
                       download={mediaJobs.find((job) => job.id === entry.task.downloadId)}
                       onError={setMediaError}
+                      now={now}
                     />
                   ) : (
-                    <MediaDownloadTask key={entry.id} job={entry.task} onError={setMediaError} />
+                    <MediaDownloadTask
+                      key={entry.id}
+                      job={entry.task}
+                      onError={setMediaError}
+                      now={now}
+                    />
                   ),
                 )}
               </section>
