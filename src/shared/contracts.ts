@@ -3,6 +3,7 @@ import { javbusUrlSchema } from './media-links'
 import type { MediaLibraryApi } from './media-library'
 import type { PreparationPlan, PreparationState } from './preparation'
 import type { PipelinePlan, PipelineRequest, PipelineState } from './pipeline'
+import type { ExecutionRecordRequest } from './execution-record'
 
 export const pathKeys = [
   'download',
@@ -172,6 +173,7 @@ export type PerformanceSnapshot = {
   }
 }
 export interface DesktopApi extends MediaLibraryApi {
+  openExecutionRecord(request: ExecutionRecordRequest): Promise<void>
   previewPipeline(request: PipelineRequest): Promise<PipelinePlan>
   startPipeline(request: { planId: string }): Promise<PipelineState>
   getPipelineState(): Promise<PipelineState | null>

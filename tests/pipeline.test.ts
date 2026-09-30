@@ -217,6 +217,46 @@ afterEach(async () => {
   }
 })
 describe('四步处理与文件保护', () => {
+  it.skipIf(process.platform !== 'win32')('原文件短暂被占用时复核身份后重试清理', async () => {
+    const f = await fixture()
+    const original = fs.unlink
+    let attempts = 0
+    vi.spyOn(fs, 'unlink').mockImplementation(async (path) => {
+      if (String(path) === f.source && attempts++ === 0)
+        throw Object.assign(new Error('模拟短暂占用'), { code: 'EPERM' })
+      return original(path)
+    })
+    const result = await f.start(['subtitle-mux'])
+    expect(result.status, result.message).toBe('succeeded')
+    expect(attempts).toBe(2)
+    await expect(fs.stat(f.source)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await fs.readFile(join(f.settings.paths.preprocess, 'ABC-123-C.mkv'), 'utf8')).toBe(
+      '隔离的媒体替身',
+    )
+  })
+  it('原文件在发布后消失时记录准确原因并保留产物', async () => {
+    const f = await fixture()
+    const original = fs.unlink
+    const moved = join(f.settings.paths.preprocess, '外部移动的原文件.mp4')
+    vi.spyOn(fs, 'unlink').mockImplementation(async (path) => {
+      if (String(path) === f.source) {
+        await fs.rename(f.source, moved)
+        throw Object.assign(new Error('模拟文件消失'), { code: 'ENOENT' })
+      }
+      return original(path)
+    })
+    const result = await f.start(['subtitle-mux'])
+    expect(result.status).toBe('failed')
+    expect(result.message).toContain('清理原文件 ABC-123.mp4 失败：原文件已不在预期位置')
+    await expect(fs.stat(f.source)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await fs.readFile(moved, 'utf8')).toBe('隔离的媒体替身')
+    expect(await fs.readFile(join(f.settings.paths.preprocess, 'ABC-123-C.mkv'), 'utf8')).toBe(
+      '隔离的媒体替身',
+    )
+    const journal = await fs.readFile(result.journal!, 'utf8')
+    expect(journal).toContain('"type":"delete-failed"')
+    expect(journal).toContain('"code":"ENOENT"')
+  })
   it('取消后丢弃迟到工具进度，并保留停止位置与源文件', async () => {
     const f = await fixture()
     let late: ProcessRequest['onLine']
@@ -328,7 +368,7 @@ describe('四步处理与文件保护', () => {
     expect(runReducer(state, { type: 'tick', now: '12:00' })).toBe(state)
     expect(isRunning(state)).toBe(false)
   })
-  it('保留 MDC 的演员与番号层级，归档不加入视频名外层，未配置日志时只输出到控制台', async () => {
+  it('保留 MDC 的演员与番号层级，脱敏后的工具输出同时写入应用执行记录', async () => {
     const f = await fixture()
     f.mode('MDC 分层目录')
     const consoleOutput = vi.spyOn(console, 'log').mockImplementation(() => {})
@@ -346,7 +386,7 @@ describe('四步处理与文件保护', () => {
       const mdcCall = f.calls.find((call) => call.args.includes('-cli'))!
       expect(mdcCall.args).toContain('--log-dir=')
       expect(consoleOutput).toHaveBeenCalledWith('MDC · 测试输出 token=[已隐藏]')
-      expect(await fs.readFile(result.journal, 'utf8')).not.toContain('MDC · 测试输出')
+      expect(await fs.readFile(result.journal, 'utf8')).toContain('MDC · 测试输出 token=[已隐藏]')
     } finally {
       consoleOutput.mockRestore()
     }
@@ -499,6 +539,83 @@ describe('四步处理与文件保护', () => {
     expect(f.calls.some((call) => call.args.includes('-cli'))).toBe(false)
     expect(await fs.readFile(target, 'utf8')).toBe('已有影片')
     expect(await fs.readFile(f.source, 'utf8')).toBe('隔离的媒体替身')
+  })
+  it('MDC 单文件失败后继续刮削，其余成功文件进入 NAS 且失败源保留', async () => {
+    const f = await fixture()
+    const failed = join(f.settings.paths.preprocess, 'DEF-456.mp4')
+    const later = join(f.settings.paths.preprocess, 'GHI-789.mp4')
+    await fs.writeFile(failed, '未找到番号的媒体替身')
+    await fs.writeFile(later, '后续媒体替身')
+    f.observe((request) => {
+      if (!request.args.includes('-cli')) return
+      f.mode(request.args[1] === failed ? '工具失败' : 'MDC 分层目录')
+    })
+    const result = await f.start(['scrape', 'archive'])
+    expect(result.status).toBe('failed')
+    expect(result.message).toContain('成功 2/3 项，失败 1 项')
+    expect(result.tasks[0]).toMatchObject({ status: 'failed', completed: 2, total: 3, failed: 1 })
+    expect(result.tasks[1]).toMatchObject({ status: 'succeeded', completed: 2, total: 2 })
+    expect(result.failures).toEqual([
+      expect.objectContaining({
+        step: 'scrape',
+        file: failed,
+        reason: expect.stringContaining('MDC'),
+      }),
+    ])
+    expect(
+      f.calls.filter((call) => call.args.includes('-cli')).map((call) => call.args[1]),
+    ).toEqual([f.source, failed, later])
+    expect(await fs.readFile(failed, 'utf8')).toBe('未找到番号的媒体替身')
+    expect(
+      await fs.readFile(join(f.settings.paths.nas, '演员', 'ABC-123', 'ABC-123.mp4'), 'utf8'),
+    ).toBe('隔离的媒体替身')
+    expect(
+      await fs.readFile(join(f.settings.paths.nas, '演员', 'GHI-789', 'GHI-789.mp4'), 'utf8'),
+    ).toBe('后续媒体替身')
+    await expect(fs.stat(join(f.settings.paths.nas, '演员', 'DEF-456'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    expect(await fs.readFile(result.journal, 'utf8')).toContain('file-failed')
+  })
+  it.each(['MDC丢标签', 'MDC丢标记'])(
+    '%s 时保留失败输入，其余通过校验的文件仍可归档',
+    async (mode) => {
+      const f = await fixture()
+      const failed = join(f.settings.paths.preprocess, 'DEF-456-UC.mkv')
+      await fs.writeFile(failed, '必须保留中文字幕和破解标记的媒体替身')
+      f.observe((request) => {
+        if (request.args.includes('-cli'))
+          f.mode(request.args[1] === failed ? mode : 'MDC 分层目录')
+      })
+      const result = await f.start(['scrape', 'archive'])
+      expect(result.status).toBe('failed')
+      expect(result.tasks[0]).toMatchObject({ status: 'failed', completed: 1, failed: 1, total: 2 })
+      expect(result.tasks[1]).toMatchObject({ status: 'succeeded', completed: 1, total: 1 })
+      expect(result.failures).toEqual([
+        expect.objectContaining({
+          step: 'scrape',
+          file: failed,
+          reason: expect.stringContaining('MDC'),
+        }),
+      ])
+      expect(await fs.readFile(failed, 'utf8')).toBe('必须保留中文字幕和破解标记的媒体替身')
+      expect(
+        await fs.readFile(join(f.settings.paths.nas, '演员', 'ABC-123', 'ABC-123.mp4'), 'utf8'),
+      ).toBe('隔离的媒体替身')
+      await expect(fs.stat(join(f.settings.paths.nas, 'DEF-456'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+    },
+  )
+  it('MDC 全部失败时不启动 NAS，也不删除源文件', async () => {
+    const f = await fixture()
+    f.mode('工具失败')
+    const result = await f.start(['scrape', 'archive'])
+    expect(result.status).toBe('failed')
+    expect(result.tasks[0]).toMatchObject({ status: 'failed', completed: 0, failed: 1 })
+    expect(result.tasks[1]).toMatchObject({ status: 'skipped', completed: 0, total: 0 })
+    expect(await fs.readFile(f.source, 'utf8')).toBe('隔离的媒体替身')
+    expect(await fs.readdir(f.settings.paths.nas)).toEqual([])
   })
   it('已有 SRT 先校验复用，失败时保留字幕与源视频并清理中间输出', async () => {
     const f = await fixture()

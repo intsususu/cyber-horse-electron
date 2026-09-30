@@ -6,6 +6,7 @@ import type {
   MediaLibrary,
   MediaQuery,
   MediaLinkTarget,
+  MediaDeletionConfirmation,
 } from '../../../shared/media-library'
 import type { Workspace } from './use-workspace'
 
@@ -34,6 +35,16 @@ export function useMediaLibrary(workspace: Workspace, active: boolean) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [action, setAction] = useState('')
+  const [deletion, setDeletion] = useState<MediaDeletionConfirmation | null>(null)
+  const deletionResolve = useRef<((confirmed: boolean) => void) | null>(null)
+  const activeRef = useRef(active)
+  activeRef.current = active
+  const resolveDeletion = (confirmed: boolean) => {
+    const resolve = deletionResolve.current
+    deletionResolve.current = null
+    setDeletion(null)
+    resolve?.(confirmed)
+  }
   const [visible, setVisible] = useState(workspace.settings.privacyCover.defaultEyeOpen)
   const sequence = useRef(0)
   const actionLock = useRef(false)
@@ -43,6 +54,14 @@ export function useMediaLibrary(workspace: Workspace, active: boolean) {
   const viewRef = useRef(view)
   viewRef.current = view
   const connection = JSON.stringify(workspace.settings.mediaServer)
+  useEffect(() => {
+    if (!active) resolveDeletion(false)
+    return () => {
+      deletionResolve.current?.(false)
+      deletionResolve.current = null
+    }
+  }, [active, connection])
+  useEffect(() => setDeletion(null), [connection])
   useLayoutEffect(() => {
     if (restoreScroll.current === null || !scroll.current) return
     scroll.current.scrollTop = restoreScroll.current
@@ -291,6 +310,8 @@ export function useMediaLibrary(workspace: Workspace, active: boolean) {
     busy,
     error,
     action,
+    deletion,
+    resolveDeletion,
     visible,
     setVisible,
     scroll,
@@ -348,7 +369,14 @@ export function useMediaLibrary(workspace: Workspace, active: boolean) {
     remove: (id: string) =>
       perform('delete', async () => {
         const request = sequence.current
-        if (await window.cyberHorse!.deleteMediaItem(id)) {
+        const confirmation = await window.cyberHorse!.prepareMediaDeletion(id)
+        if (request !== sequence.current || !activeRef.current) return
+        const confirmed = await new Promise<boolean>((resolve) => {
+          deletionResolve.current = resolve
+          setDeletion(confirmation)
+        })
+        if (!confirmed || request !== sequence.current || !activeRef.current) return
+        if (await window.cyberHorse!.deleteMediaItem(confirmation.token)) {
           if (request !== sequence.current) return
           mutateViews(id, null)
           if (

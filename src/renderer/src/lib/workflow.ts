@@ -13,6 +13,7 @@ export type DemoTask = {
   completed?: number
   total?: number
   skipped?: number
+  failed?: number
   startedAt?: string
   endedAt?: string
 }
@@ -51,20 +52,12 @@ export function runReducer(state: RunState, action: RunAction): RunState {
       id: Date.parse(next.startedAt),
       pipeline: next,
       scope: { files: next.files, source: next.source, mode: next.mode },
-      tasks: next.tasks.map((task) => ({
-        ...task,
-        startedAt:
-          task.startedAt && new Date(task.startedAt).toLocaleTimeString('zh-CN', { hour12: false }),
-        endedAt:
-          task.endedAt && new Date(task.endedAt).toLocaleTimeString('zh-CN', { hour12: false }),
-      })),
+      tasks: next.tasks.map((task) => ({ ...task })),
     }
   }
   if (action.type === 'preparation') {
     const next = action.state
     if (Date.parse(next.startedAt) < state.id) return state
-    const localTime = (value: string) =>
-      new Date(value).toLocaleTimeString('zh-CN', { hour12: false })
     return {
       id: Date.parse(next.startedAt),
       preparation: next,
@@ -74,8 +67,8 @@ export function runReducer(state: RunState, action: RunAction): RunState {
           title: '提取清理并重命名',
           status: next.status === 'cancelling' ? 'running' : next.status,
           progress: Math.floor((next.completed / Math.max(1, next.total)) * 100),
-          startedAt: localTime(next.startedAt),
-          endedAt: next.endedAt ? localTime(next.endedAt) : undefined,
+          startedAt: next.startedAt,
+          endedAt: next.endedAt,
         },
       ],
     }

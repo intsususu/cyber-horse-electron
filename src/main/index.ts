@@ -43,6 +43,8 @@ import { registerMediaIpc } from './media-ipc'
 import { MediaProcessService } from './services/media-process'
 import { MediaPlayback } from './services/media-playback'
 import { MediaPlaybackLog } from './services/media-playback-log'
+import { ExecutionRecords } from './services/execution-records'
+import { executionRecordSchema } from '../shared/execution-record'
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -174,6 +176,15 @@ void app.whenReady().then(async () => {
   if (!primaryInstance) return
   const store = new SettingsStore(app.getPath('userData'))
   settingsStore = store
+  const executionRecords = new ExecutionRecords(app.getPath('userData'), (path) =>
+    shell.openPath(path),
+  )
+  ipcMain.handle(channels.openExecutionRecord, async (event, ...args: unknown[]) => {
+    validateSender(event)
+    const parsed = executionRecordSchema.safeParse(args[0])
+    if (args.length !== 1 || !parsed.success) throw new Error('执行记录标识无效。')
+    await executionRecords.open(parsed.data)
+  })
   const executionLock = new ExecutionLock()
   const protectedPaths = [app.getAppPath(), resolve(app.getAppPath(), '../cyber-horse')]
   preparation = new PreparationService(
@@ -262,14 +273,7 @@ void app.whenReady().then(async () => {
     validSettings,
     executionLock,
   )
-  registerMediaIpc(
-    mediaClient,
-    mediaDownloads,
-    mediaProcesses,
-    mediaPlayback,
-    validateSender,
-    () => mainWindow,
-  )
+  registerMediaIpc(mediaClient, mediaDownloads, mediaProcesses, mediaPlayback, validateSender)
   ipcMain.handle(channels.previewPipeline, async (event, value: unknown) => {
     validateSender(event)
     const parsed = pipelinePreviewSchema.safeParse(value)

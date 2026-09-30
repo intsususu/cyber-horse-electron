@@ -9,6 +9,24 @@ const tasks = [
 const start = () => runReducer(emptyRun, { type: 'start', tasks, id: 1, now: '10:00:00' })
 
 describe('流程演示的用户行为', () => {
+  it('真实预处理投影保留完整日期时间，跨日执行不丢失日期', () => {
+    const startedAt = '2026-09-28T23:59:00.000Z'
+    const endedAt = '2026-09-29T00:01:00.000Z'
+    const state = runReducer(emptyRun, {
+      type: 'preparation',
+      state: {
+        id: 'prepare-1',
+        status: 'succeeded',
+        completed: 1,
+        total: 1,
+        message: '完成',
+        journal: '',
+        startedAt,
+        endedAt,
+      },
+    })
+    expect(state.tasks[0]).toMatchObject({ startedAt, endedAt })
+  })
   it('冻结所选文件范围，并拒绝空步骤启动', () => {
     const files = [
       { name: 'a.mp4', path: 'C:/a.mp4', relativePath: 'a.mp4', size: 10, modifiedAt: 0 },

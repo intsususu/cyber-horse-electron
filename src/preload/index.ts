@@ -3,6 +3,7 @@ import type { DesktopApi } from '../shared/contracts'
 import { channels } from '../shared/channels'
 
 const api: DesktopApi = {
+  openExecutionRecord: (request) => ipcRenderer.invoke(channels.openExecutionRecord, request),
   openMediaLink: (request) => ipcRenderer.invoke(channels.openMediaLink, request),
   openMediaPlayback: (request) => ipcRenderer.invoke(channels.openMediaPlayback, request),
   closeMediaPlayback: (token) => ipcRenderer.invoke(channels.closeMediaPlayback, token),
@@ -22,7 +23,8 @@ const api: DesktopApi = {
   getMediaImage: (request) => ipcRenderer.invoke(channels.getMediaImage, request),
   setMediaFavorite: (request) => ipcRenderer.invoke(channels.setMediaFavorite, request),
   refreshMediaItem: (id) => ipcRenderer.invoke(channels.refreshMediaItem, id),
-  deleteMediaItem: (id) => ipcRenderer.invoke(channels.deleteMediaItem, id),
+  prepareMediaDeletion: (id) => ipcRenderer.invoke(channels.prepareMediaDeletion, id),
+  deleteMediaItem: (token) => ipcRenderer.invoke(channels.deleteMediaItem, token),
   startMediaDownload: (request) => ipcRenderer.invoke(channels.startMediaDownload, request),
   getMediaDownloads: () => ipcRenderer.invoke(channels.getMediaDownloads),
   cancelMediaDownload: (id) => ipcRenderer.invoke(channels.cancelMediaDownload, id),

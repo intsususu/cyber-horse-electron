@@ -1,4 +1,5 @@
 export const channels = {
+  openExecutionRecord: 'records:open',
   openMediaLink: 'media:open-link',
   openMediaPlayback: 'media:open-playback',
   closeMediaPlayback: 'media:close-playback',
@@ -17,6 +18,7 @@ export const channels = {
   getMediaImage: 'media:image',
   setMediaFavorite: 'media:favorite',
   refreshMediaItem: 'media:refresh',
+  prepareMediaDeletion: 'media:prepare-deletion',
   deleteMediaItem: 'media:delete',
   startMediaDownload: 'media:download',
   getMediaDownloads: 'media:downloads',

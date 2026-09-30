@@ -9,6 +9,7 @@ import { MediaChapters } from './MediaChapters'
 import { MediaDetailInfo } from './MediaDetailInfo'
 import { MediaShelf } from './MediaShelf'
 import { MediaContextMenu, type MediaContextState } from './MediaContextMenu'
+import { MediaDeleteConfirmation } from './MediaDeleteConfirmation'
 import '../styles/media-library.css'
 
 function Cover({
@@ -94,6 +95,8 @@ export function MediaLibrary({ active, workspace }: { active: boolean; workspace
   const searchInput = useRef<HTMLInputElement>(null)
   const contextRequest = useRef(0)
   const contextTrigger = useRef<HTMLElement | null>(null)
+  const deleteTrigger = useRef<HTMLElement | null>(null)
+  const restoreDeleteFocus = useRef(false)
   const [playback, setPlayback] = useState<{
     id: string
     sourceId: string
@@ -101,6 +104,12 @@ export function MediaLibrary({ active, workspace }: { active: boolean; workspace
   } | null>(null)
   const playTrigger = useRef<HTMLElement | null>(null)
   const { view, busy, action, visible } = library
+  useEffect(() => {
+    if (!action && !library.deletion && restoreDeleteFocus.current) {
+      restoreDeleteFocus.current = false
+      deleteTrigger.current?.focus({ preventScroll: true })
+    }
+  }, [action, library.deletion])
   const listing = view?.kind === 'wall' || view?.kind === 'search' ? view : null
   const searchLibrary = library.libraries.find((item) => item.id === listing?.query.libraryId)
   useEffect(() => {
@@ -552,7 +561,10 @@ export function MediaLibrary({ active, workspace }: { active: boolean; workspace
                   onProcess={(kind) => {
                     if (selectedSource) void enqueueProcess(kind, view.detail, selectedSource.id)
                   }}
-                  onRemove={() => void library.remove(view.detail.id)}
+                  onRemove={() => {
+                    deleteTrigger.current = document.activeElement as HTMLElement | null
+                    void library.remove(view.detail.id)
+                  }}
                   onFilter={(filter) => void library.filter(filter)}
                 />
               </div>
@@ -639,10 +651,20 @@ export function MediaLibrary({ active, workspace }: { active: boolean; workspace
             closeContextMenu(false)
           }}
           onRemove={() => {
+            deleteTrigger.current = contextTrigger.current
             void library.remove(contextMenu.item.id)
-            closeContextMenu(false)
+            closeContextMenu(true)
           }}
           onClose={closeContextMenu}
+        />
+      )}
+      {library.deletion && active && (
+        <MediaDeleteConfirmation
+          confirmation={library.deletion}
+          onResolve={(confirmed) => {
+            restoreDeleteFocus.current = !confirmed
+            library.resolveDeletion(confirmed)
+          }}
         />
       )}
     </section>

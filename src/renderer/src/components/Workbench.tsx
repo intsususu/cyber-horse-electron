@@ -106,6 +106,8 @@ export function Workbench({
           {workbenchSteps.map((step, index) => {
             const task = workspace.run.tasks.find((task) => task.id === step.id)
             const active = task?.status === 'running'
+            const taskStatus =
+              task?.failed && task.completed ? '部分失败' : task ? statusNames[task.status] : ''
             const included = workspace.selectedWorkbenchIds.includes(step.id)
             const directory = workspace.settings.paths[step.directoryKey]
             return (
@@ -122,10 +124,10 @@ export function Workbench({
                       {task && (
                         <span
                           className={`workbench-step-status ${task.status}`}
-                          aria-label={`${step.title}：${active ? stageLabel(task) : statusNames[task.status]}`}
+                          aria-label={`${step.title}：${active ? stageLabel(task) : taskStatus}`}
                           title={active ? speedLabel(task.current) : undefined}
                         >
-                          {active ? stageLabel(task) : statusNames[task.status]}
+                          {active ? stageLabel(task) : taskStatus}
                         </span>
                       )}
                       {task?.total !== undefined && (

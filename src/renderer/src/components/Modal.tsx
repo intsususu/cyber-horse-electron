@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type ReactNode } from 'react'
+import { useEffect, useId, useRef, type ReactNode, type RefObject } from 'react'
 import { X } from 'lucide-react'
 
 export function Modal({
@@ -6,11 +6,15 @@ export function Modal({
   children,
   onClose,
   className = '',
+  descriptionId,
+  initialFocusRef,
 }: {
   title: string
   children: ReactNode
   onClose: () => void
   className?: string
+  descriptionId?: string
+  initialFocusRef?: RefObject<HTMLElement | null>
 }) {
   const ref = useRef<HTMLDialogElement>(null)
   const titleId = useId()
@@ -18,16 +22,18 @@ export function Modal({
     const previous = document.activeElement as HTMLElement | null
     const dialog = ref.current
     dialog?.showModal()
+    initialFocusRef?.current?.focus()
     return () => {
       dialog?.close()
       previous?.focus()
     }
-  }, [])
+  }, [initialFocusRef])
   return (
     <dialog
       ref={ref}
       className={`modal ${className}`}
       aria-labelledby={titleId}
+      aria-describedby={descriptionId}
       onCancel={(event) => {
         event.preventDefault()
         onClose()

@@ -173,6 +173,37 @@ try {
       failRead: false,
       cancellations: [],
     }
+    const completed = state.processes[0]
+    completed.startedAt = '2026-09-29T02:00:00Z'
+    completed.endedAt = '2026-09-29T02:20:00Z'
+    completed.downloadId = 'completed-download'
+    state.downloads.push({
+      ...state.downloads[0],
+      id: 'completed-download',
+      itemId: completed.itemId,
+      name: '已完成任务的下载子项',
+      started: '2026-09-29T02:00:00Z',
+      ended: '2026-09-29T02:01:00Z',
+    })
+    completed.pipeline = {
+      ...state.processes[1].pipeline,
+      status: 'succeeded',
+      startedAt: '2026-09-29T02:01:00Z',
+      endedAt: '2026-09-29T02:14:00Z',
+      tasks: state.processes[1].pipeline.tasks.map((task, index) => ({
+        ...task,
+        status: 'succeeded',
+        current: undefined,
+        progress: 100,
+        completed: 1,
+        startedAt: index ? '2026-09-29T02:06:00Z' : '2026-09-29T02:01:00Z',
+        endedAt: index ? '2026-09-29T02:14:00Z' : '2026-09-29T02:06:00Z',
+        message: '处理完成。',
+      })),
+    }
+    const active = state.processes[1]
+    active.startedAt = new Date(Date.now() - 180000).toISOString()
+    active.pipeline.tasks[0].startedAt = new Date(Date.now() - 120000).toISOString()
     globalThis.queueFixture = state
     const bind = (channel, handler) => {
       ipcMain.removeHandler(channel)
@@ -219,6 +250,10 @@ try {
   await expect(page.getByRole('tabpanel')).not.toContainText('所选步骤处理完成')
   await expect(page.getByText('已合并的下载子项')).toHaveCount(0)
   await expect(current.getByRole('progressbar')).toHaveAttribute('value', '42')
+  const overallTiming = current.locator('.queue-card-summary .queue-duration')
+  await expect(overallTiming).toContainText('已运行：')
+  const initialTiming = await overallTiming.innerText()
+  await expect.poll(() => overallTiming.innerText()).not.toBe(initialTiming)
   await expect(page.getByRole('button', { name: '清空记录' })).toBeDisabled()
   for (const theme of ['初号机主题', '深色模式', '浅色模式']) {
     await run(theme)
@@ -242,9 +277,38 @@ try {
   await page.keyboard.press('ArrowRight')
   await expect(tab('已完成')).toBeFocused()
   await expect(page.getByRole('tabpanel').locator('.queue-card')).toHaveCount(3)
+  await expect(page.getByRole('heading', { name: '已完成任务', exact: true })).toHaveCount(0)
+  const completedCard = page.locator('.queue-card').filter({ hasText: '示例影片 01' })
+  await expect(completedCard.locator('.queue-card-summary .queue-duration')).toContainText(
+    '总耗时：20 分',
+  )
+  await completedCard.locator(':scope > details > summary').click()
+  const steps = completedCard.locator('.media-process-step')
+  await expect(steps).toHaveCount(3)
+  await expect(steps.nth(0)).toContainText('下载原文件')
+  await expect(steps.nth(0)).toContainText('耗时：1 分')
+  await expect(steps.nth(1)).toContainText('耗时：5 分')
+  await expect(steps.nth(2)).toContainText('耗时：8 分')
+  await expect(completedCard.locator('.queue-records .queue-timing').first()).toBeHidden()
+  await steps.last().scrollIntoViewIfNeeded()
+  await expect(steps.nth(1).getByText('耗时：5 分')).toBeInViewport()
+  await expect(steps.nth(2).getByText('耗时：8 分')).toBeInViewport()
+  for (const theme of ['深色模式', '浅色模式']) {
+    await run(theme)
+    await capture(`执行时间-${theme}`)
+  }
+  await run('初号机主题')
+  const recordsToggle = completedCard.getByText('起止时间与执行记录', { exact: true })
+  await recordsToggle.focus()
+  await page.keyboard.press('Enter')
+  await expect(completedCard.locator('.queue-records time').first()).toBeVisible()
+  await page.keyboard.press('Enter')
+  await expect(completedCard.locator('.queue-records time').first()).toBeHidden()
+  await tab('已完成').focus()
   await capture('已完成')
   await page.keyboard.press('End')
   await expect(tab('未完成')).toBeFocused()
+  await expect(page.getByRole('heading', { name: '失败、取消与跳过', exact: true })).toHaveCount(0)
   await expect(page.getByRole('tabpanel')).toContainText('源文件已保留')
   await page.keyboard.press('Home')
   await expect(tab('进行中')).toBeFocused()

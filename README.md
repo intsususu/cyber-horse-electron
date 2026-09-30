@@ -40,7 +40,7 @@ npm run dev:web
 npm run dist:portable
 ```
 
-脚本会先检查类型并构建，再生成 Windows x64 免安装单文件程序：`release/Cyber-Horse-0.1.0-x64-portable.exe`（文件名中的版本号随项目版本变化）。复制这个 EXE 到目标 Windows 电脑后即可双击启动，无需安装 Node.js、npm 或 Electron，也无需保留项目源码。首次打包需要联网下载 Electron 和打包工具。
+脚本会先检查类型并构建，再生成 Windows x64 免安装单文件程序：`release/Cyber-Horse-0.1.0-x64-portable.exe`（文件名中的版本号随项目版本变化）。复制这个 EXE 到目标 Windows 电脑后即可双击启动，无需安装 Node.js、npm 或 Electron，也无需保留项目源码。免安装打包复用 `npm ci` 安装到 `node_modules/electron/dist` 的运行文件，跳过重新解压 Electron 后重命名 `win-unpacked.tmp` 的步骤，避免本机该步骤出现的 `EPERM`。请在 Windows x64 环境安装依赖并打包；首次安装和打包仍需联网获取相关工具。
 
 免安装程序运行时会自动解压到临时目录；配置仍保存在本机用户数据目录，不随 EXE 一起移动。媒体处理所需的 Whisper、模型、mkvmerge、Jasna、MDC 等外部工具不会一并打包，需要在目标电脑单独准备并配置路径。当前打包清单包含本机 `config/default-settings.json`（如存在）和 `assets` 资源，对外分享前应检查其中是否包含个人路径、服务器资料或凭据。
 

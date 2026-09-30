@@ -64,6 +64,7 @@ const capabilities: Record<ToolName, string[]> = {
   mdc: ['--cli', '--config-override', '--local-config-file'],
   ffprobe: ['-show_format', '-show_streams'],
 }
+export class MdcItemFailure extends Error {}
 function checkWhisperRuntime(name: ToolName, result: ProcessResult): void {
   if (name === 'whisper') {
     const missing = (result.stderr + result.stdout).match(
@@ -484,45 +485,64 @@ export class PipelineTools {
       )
         throw new Error('MDC 输出目录已有同名视频，请先核对，避免工具覆盖。')
     }
-    await this.invoke(
-      tools,
-      'mdc',
-      [
-        '-cli',
-        input,
-        '-C',
-        `common:source_folders=${JSON.stringify([sourceDirectory.replace(/\\/g, '/')])}`,
-        '-C',
-        `common:success_folder=${outputDirectory.replace(/\\/g, '/')}`,
-        '--log-dir=',
-      ],
-      signal,
-      log,
-      2 * 60 * 60_000,
-    )
+    try {
+      await this.invoke(
+        tools,
+        'mdc',
+        [
+          '-cli',
+          input,
+          '-C',
+          `common:source_folders=${JSON.stringify([sourceDirectory.replace(/\\/g, '/')])}`,
+          '-C',
+          `common:success_folder=${outputDirectory.replace(/\\/g, '/')}`,
+          '--log-dir=',
+        ],
+        signal,
+        log,
+        2 * 60 * 60_000,
+      )
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith('MDC 执行失败')) throw error
+      throw new MdcItemFailure(error.message)
+    }
     for (const [path, stamp] of previous) await unchanged(path, stamp)
     const files = (await listFiles(outputDirectory, signal)).filter((path) => !previous.has(path))
     const videos = files.filter((path) =>
       /\.(mp4|mkv|avi|mov|wmv|flv|m4v|ts|mts|m2ts|webm|mpg|mpeg|vob)$/i.test(path),
     )
     if (videos.length !== 1 || (await hashFile(videos[0]!, signal)) !== expectedHash)
-      throw new Error('MDC 没有生成唯一且完整的视频产物，请核对源目录与输出目录。')
-    verifyMediaIdentity(videos[0]!, expected)
+      throw new MdcItemFailure('MDC 没有生成唯一且完整的视频产物，请核对源目录与输出目录。')
+    try {
+      verifyMediaIdentity(videos[0]!, expected)
+    } catch (error) {
+      throw new MdcItemFailure(error instanceof Error ? error.message : 'MDC 产物身份校验失败。')
+    }
     if (files.some((path) => !inside(dirname(videos[0]!), path)))
       throw new Error('MDC 产物分散在多个目录，未提交输出。')
     const nfo = join(dirname(videos[0]!), basename(videos[0]!, extname(videos[0]!)) + '.nfo')
     if (!files.includes(nfo) || (await fileStamp(nfo)).size > 2 * 1024 * 1024)
-      throw new Error('MDC 缺少配套元数据文件或文件过大。')
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(await readFile(nfo))
-    verifyMdcMetadata(text, expected)
+      throw new MdcItemFailure('MDC 缺少配套元数据文件或文件过大。')
+    const nfoBytes = await readFile(nfo)
+    let text: string
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(nfoBytes)
+    } catch {
+      throw new MdcItemFailure('MDC 元数据文件不是有效的 UTF-8 文本。')
+    }
+    try {
+      verifyMdcMetadata(text, expected)
+    } catch (error) {
+      throw new MdcItemFailure(error instanceof Error ? error.message : 'MDC 元数据校验失败。')
+    }
     if (
       !files.some(
         (path) => /\.(jpe?g|png|webp)$/i.test(path) && /poster|thumb|fanart/i.test(basename(path)),
       )
     )
-      throw new Error('MDC 未生成封面资源，未提交输出。')
+      throw new MdcItemFailure('MDC 未生成封面资源，未提交输出。')
     for (const path of files)
-      if (!(await fileStamp(path)).size) throw new Error('MDC 存在空的输出文件，未提交。')
+      if (!(await fileStamp(path)).size) throw new MdcItemFailure('MDC 存在空的输出文件，未提交。')
     for (const subtitle of subtitles) {
       let retained = false
       for (const path of files.filter((path) => extname(path).toLowerCase() === subtitle.extension))
@@ -530,7 +550,8 @@ export class PipelineTools {
           retained = true
           break
         }
-      if (!retained) throw new Error('MDC 产物缺少原有字幕或字幕内容发生变化，未提交输出。')
+      if (!retained)
+        throw new MdcItemFailure('MDC 产物缺少原有字幕或字幕内容发生变化，未提交输出。')
     }
     return files
   }
