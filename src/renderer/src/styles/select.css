@@ -1,0 +1,115 @@
+.app-select {
+  position: relative;
+  min-width: 0;
+}
+.app-select .app-select-trigger,
+.app-select-editable {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--input);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-body);
+  text-align: left;
+}
+.app-select .app-select-trigger > span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-select svg {
+  flex-shrink: 0;
+}
+.app-select .app-select-trigger:hover:enabled {
+  background: var(--surface-hover);
+}
+.app-select[data-open='true'] .app-select-trigger,
+.app-select[data-open='true'] .app-select-editable {
+  border-color: var(--accent-border);
+}
+.app-select .app-select-editable {
+  padding: 0;
+}
+.app-select .app-select-editable input {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: var(--text);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+}
+.app-select-editable > button {
+  display: grid;
+  place-items: center;
+  align-self: stretch;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+}
+.app-select .app-select-menu {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  box-sizing: border-box;
+  padding: 4px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: var(--shadow-modal);
+  font-size: var(--font-body);
+}
+.app-select .app-select-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+}
+.app-select .app-select-menu button > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.app-select .app-select-menu button small {
+  display: block;
+  font-size: var(--font-small);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.app-select .app-select-menu button:hover,
+.app-select .app-select-menu button:focus-visible {
+  background: var(--surface-hover);
+}
+.app-select .app-select-menu button[aria-selected='true'] {
+  background: var(--selected);
+}
+.app-select .app-select-menu button[aria-selected='true'] svg {
+  color: var(--accent);
+}
+.app-select .app-select-menu button:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: -2px;
+}

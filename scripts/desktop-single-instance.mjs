@@ -14,7 +14,11 @@ export async function verifySingleInstance(application, environment) {
   const child = spawn(executable, ['.'], {
     env: environment,
     windowsHide: true,
-    stdio: 'ignore',
+    stdio: ['ignore', 'ignore', 'pipe'],
+  })
+  let stderr = ''
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString('utf8')
   })
   const code = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -25,12 +29,13 @@ export async function verifySingleInstance(application, environment) {
       clearTimeout(timer)
       reject(error)
     })
-    child.once('exit', (code) => {
+    child.once('close', (code) => {
       clearTimeout(timer)
       resolve(code)
     })
   })
   expect(code).toBe(0)
+  expect(stderr).not.toMatch(/Unable to (?:move the cache|create cache)|Gpu Cache Creation failed/i)
   await expect
     .poll(() =>
       application.evaluate(({ BrowserWindow }) => ({

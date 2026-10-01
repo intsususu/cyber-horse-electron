@@ -6,7 +6,10 @@ import { defaultSettings } from '../src/shared/contracts'
 import type { PipelineStep } from '../src/shared/pipeline'
 import { TaskWorkspaces } from '../src/main/services/task-workspaces'
 import { TaskProcessing } from '../src/main/services/task-processing'
+import { TaskScheduler } from '../src/main/services/task-scheduler'
+import { resourceLeases } from '../src/main/services/task-resource-lease'
 import { TaskJournal } from '../src/main/services/task-journal'
+import { TaskRecovery } from '../src/main/services/task-recovery'
 import { PipelineTools } from '../src/main/services/pipeline-tools'
 import { mediaIdentity } from '../src/main/services/media-identity'
 import type { ProcessRequest, ProcessRunner } from '../src/main/services/tool-process'
@@ -93,9 +96,21 @@ async function fixture(steps: PipelineStep[] = ['subtitle-mux', 'video', 'scrape
       await fs.copyFile(input, join(output, name))
       for (const file of (await fs.readdir(dirname(input)))
         .filter((name) => name !== basename(input))
-        .filter((name) => mode !== '丢字幕' || !name.endsWith('.srt')))
+        .filter(
+          (name) =>
+            !['丢字幕', '移动视频留字幕', '删除字幕', '修改字幕'].includes(mode) ||
+            !/\.(srt|ass|vtt)$/i.test(name),
+        ))
         await fs.copyFile(join(dirname(input), file), join(output, file))
-      if (mode === '移动输入') await fs.unlink(input)
+      if (['移动输入', '移动视频留字幕', '移动视频字幕冲突'].includes(mode)) await fs.unlink(input)
+      for (const name of (await fs.readdir(dirname(input))).filter((name) =>
+        /\.(srt|ass|vtt)$/i.test(name),
+      )) {
+        if (mode === '删除字幕') await fs.unlink(join(dirname(input), name))
+        if (mode === '修改字幕') await fs.writeFile(join(dirname(input), name), '被工具修改')
+        if (mode === '冲突字幕' || mode === '移动视频字幕冲突')
+          await fs.writeFile(join(output, name), '与原字幕不同')
+      }
       const tags =
         mode === '丢标签'
           ? ''
@@ -108,7 +123,7 @@ async function fixture(steps: PipelineStep[] = ['subtitle-mux', 'video', 'scrape
     }
     return done()
   }
-  const processing = new TaskProcessing(workspaces, new PipelineTools(runner))
+  const processing = new TaskProcessing(workspaces, new PipelineTools(runner), new TaskScheduler())
   const create = (path = source, companions: string[] = []) =>
     workspaces.create(
       settings.paths.download,
@@ -146,6 +161,54 @@ afterEach(async () => {
 })
 
 describe('任务目录内的处理步骤', () => {
+  it.each(['subtitle-mux', 'video'] as const)(
+    '%s 跨任务可同时执行，旧 GPU 占用记录不阻止处理或恢复',
+    async (step) => {
+      const f = await fixture([step])
+      const second = join(f.settings.paths.preprocess, 'CLUB-495.mp4')
+      await fs.writeFile(second, '另一个隔离视频')
+      const workspaces = [await f.create(), await f.create(second)]
+      const leaseRoot = join(f.settings.paths.download, '.work', '资源占用')
+      await fs.mkdir(leaseRoot)
+      const legacyPath = join(leaseRoot, 'gpu.json')
+      const legacy = JSON.stringify({
+        pid: process.pid,
+        directory: workspaces[0]!.directory,
+        resource: 'gpu',
+      })
+      await fs.writeFile(legacyPath, legacy)
+      const method = step === 'video' ? 'video' : 'subtitle'
+      let entered = 0
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      // 只延迟真实适配入口；产物仍由工具替身生成并走完整校验。
+      const original = PipelineTools.prototype[method]
+      const spy = vi.spyOn(PipelineTools.prototype, method).mockImplementation(async function (
+        this: PipelineTools,
+        ...args: unknown[]
+      ) {
+        entered++
+        await gate
+        return Reflect.apply(original, this, args)
+      })
+      const runs = workspaces.map((workspace) =>
+        f.processing.run(workspace.directory, workspace.task.id, f.settings, signal()),
+      )
+      try {
+        await vi.waitFor(() => expect(entered).toBe(2))
+      } finally {
+        release()
+        await Promise.allSettled(runs)
+        spy.mockRestore()
+      }
+      expect((await Promise.all(runs)).every((task) => task.state === 'finalizing')).toBe(true)
+      expect(await resourceLeases(workspaces[0]!.directory)).toEqual([])
+      expect(await fs.readFile(legacyPath, 'utf8')).toBe(legacy)
+      expect(await fs.readdir(leaseRoot)).toEqual(['gpu.json'])
+    },
+  )
   it('同批相同番号独立执行，两个版本都保留且不添加防重尾缀', async () => {
     const f = await fixture(['video', 'scrape'])
     const second = join(f.settings.paths.preprocess, 'CLUB-494_2.mp4')
@@ -178,6 +241,8 @@ describe('任务目录内的处理步骤', () => {
   it('复用并校验已有 SRT，ASS 封装后记录与清理临时字幕', async () => {
     const f = await fixture(['subtitle-mux'])
     f.settings.subtitle.format = 'ass'
+    f.settings.subtitle.fontName = 'SimSun'
+    f.settings.subtitle.fontSize = 72
     const sidecar = f.source.replace('.mp4', '.srt')
     await fs.writeFile(sidecar, srt)
     const workspace = await f.create(f.source, [sidecar])
@@ -190,6 +255,10 @@ describe('任务目录内的处理步骤', () => {
     expect(f.calls.some((call) => call.args.includes('--sub_formats'))).toBe(false)
     const file = task.files[0]!
     expect(file.steps[0]!.outputFiles.some((path) => path.endsWith('CLUB-494-C.ass'))).toBe(true)
+    const ass = file.steps[0]!.outputFiles.find((path) => path.endsWith('.ass'))!
+    expect(await fs.readFile(join(workspace.directory, ass), 'utf8')).toContain(
+      'Style: Default,SimSun,72,',
+    )
     expect(
       file.artifacts
         .filter((entry) => entry.role === 'subtitle')
@@ -348,21 +417,47 @@ describe('任务目录内的处理步骤', () => {
     expect((await new TaskJournal(pending.directory).read()).task.state).toBe('cancelled')
   })
 
-  it('MDC 遗漏原有字幕时不清理输入，工具失败也不添加成功标记', async () => {
+  it.each(['删除字幕', '修改字幕', '冲突字幕'])('MDC %s 时停止且保留视频产物', async (mode) => {
     const f = await fixture(['scrape'])
     const sidecar = f.source.replace('.mp4', '.srt')
     await fs.writeFile(sidecar, srt)
     const workspace = await f.create(f.source, [sidecar])
-    f.mode('丢字幕')
+    f.mode(mode)
     await expect(
       f.processing.run(workspace.directory, workspace.task.id, f.settings, signal()),
-    ).rejects.toThrow('缺少原有字幕')
+    ).rejects.toThrow(/字幕/)
     const task = (await new TaskJournal(workspace.directory).read()).task
-    const subtitle = task.files[0]!.artifacts.find(
-      (entry) =>
-        entry.role === 'input' && entry.state === 'verified' && entry.path.endsWith('.srt'),
-    )!
-    expect(await fs.readFile(join(workspace.directory, subtitle.path), 'utf8')).toBe(srt)
+    expect(task.files[0]!.steps[0]!.state).toBe('failed')
+    const input = task.files[0]!.steps[0]!.inputVideo!
+    expect(await fs.readFile(join(workspace.directory, input), 'utf8')).toBe('隔离视频内容')
+  })
+
+  it.each(['srt', 'ass', 'vtt'])(
+    'MDC 移走视频但遗漏 %s 字幕时补齐并纳入产物',
+    async (extension) => {
+      const f = await fixture(['scrape'])
+      const sidecar = f.source.replace('.mp4', '.zh.' + extension)
+      await fs.writeFile(sidecar, srt)
+      const workspace = await f.create(f.source, [sidecar])
+      f.mode('移动视频留字幕')
+      const task = await f.processing.run(
+        workspace.directory,
+        workspace.task.id,
+        f.settings,
+        signal(),
+      )
+      const step = task.files[0]!.steps[0]!
+      expect(step.state).toBe('verified')
+      const output = step.outputFiles.find((path) => path.endsWith('.zh.' + extension))!
+      expect(await fs.readFile(join(workspace.directory, output), 'utf8')).toBe(srt)
+      expect(task.files[0]!.artifacts.find((entry) => entry.path === output)).toMatchObject({
+        state: 'verified',
+        role: 'output',
+      })
+    },
+  )
+
+  it('工具失败不添加成功标记', async () => {
     const failed = await fixture(['video'])
     failed.mode('处理失败')
     const queued = await failed.create()
@@ -374,6 +469,74 @@ describe('任务目录内的处理步骤', () => {
     expect(
       await fs.readFile(join(queued.directory, record.files[0]!.sources[0]!.target), 'utf8'),
     ).toBe('隔离视频内容')
+  })
+
+  it.each(['取消', '写入失败'])('补齐字幕时%s保留源字幕和视频产物', async (mode) => {
+    const f = await fixture(['scrape'])
+    const sidecar = f.source.replace('.mp4', '.ass')
+    await fs.writeFile(sidecar, srt)
+    const workspace = await f.create(f.source, [sidecar])
+    f.mode('移动视频留字幕')
+    const controller = new AbortController()
+    const open = fs.open
+    let injected = false
+    vi.spyOn(fs, 'open').mockImplementation(async (path, flags, options) => {
+      if (String(path).includes('输出') && String(path).endsWith('.partial') && flags === 'wx') {
+        injected = true
+        if (mode === '取消') controller.abort()
+        throw new Error('模拟字幕交接中断')
+      }
+      return open(path, flags, options)
+    })
+    await expect(
+      f.processing.run(workspace.directory, workspace.task.id, f.settings, controller.signal),
+    ).rejects.toThrow(/取消|无法安全补齐/)
+    expect(injected).toBe(true)
+    const task = (await new TaskJournal(workspace.directory).read()).task
+    const step = task.files[0]!.steps[0]!
+    const input = step.inputFiles.find((path) => path.endsWith('.ass'))!
+    expect(await fs.readFile(join(workspace.directory, input), 'utf8')).toBe(srt)
+    const outputRoot = join(
+      workspace.directory,
+      task.files[0]!.directory,
+      '元数据刮削',
+      '输出',
+      '演员',
+      'CLUB-494',
+    )
+    expect((await fs.readdir(outputRoot)).some((name) => name.endsWith('.mp4'))).toBe(true)
+    expect((await fs.readdir(outputRoot)).some((name) => name.endsWith('.ass'))).toBe(false)
+  })
+
+  it('字幕封装成功后 MDC 移走视频并失败，恢复只重跑刮削且能补齐遗漏 ASS', async () => {
+    const f = await fixture(['subtitle-mux', 'scrape'])
+    f.settings.subtitle.format = 'ass'
+    f.mode('移动视频字幕冲突')
+    const workspace = await f.create()
+    await expect(
+      f.processing.run(workspace.directory, workspace.task.id, f.settings, signal()),
+    ).rejects.toThrow('同名字幕冲突')
+    const failed = (await new TaskJournal(workspace.directory).read()).task
+    expect(failed.files[0]!.steps[0]!.state).toBe('verified')
+    const before = f.calls.filter(
+      (call) => call.args.includes('--sub_formats') || call.args.includes('-o'),
+    ).length
+    await new TaskRecovery(f.workspaces).resume(workspace.directory, failed, signal())
+    f.mode('移动视频留字幕')
+    const resumed = await f.processing.run(
+      workspace.directory,
+      workspace.task.id,
+      f.settings,
+      signal(),
+      () => {},
+      true,
+    )
+    expect(resumed.files[0]!.steps[1]).toMatchObject({ state: 'verified', attempt: 1 })
+    expect(
+      f.calls.filter((call) => call.args.includes('--sub_formats') || call.args.includes('-o')),
+    ).toHaveLength(before)
+    const ass = resumed.files[0]!.steps[1]!.outputFiles.find((path) => path.endsWith('.ass'))!
+    expect(await fs.readFile(join(workspace.directory, ass), 'utf8')).toContain('[Events]')
   })
 
   it('步骤成功记录写入失败时，输出和被替换输入均保留供核对', async () => {

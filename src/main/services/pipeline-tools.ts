@@ -13,9 +13,12 @@ import {
   availablePath,
   checkDirectory,
   inside,
+  copyChecked,
+  pathKey,
 } from './safe-files'
 import { runTool, type ProcessRunner, type ProcessResult, redactToolLine } from './tool-process'
 import { parseSrt, srtToAss } from './subtitles'
+import { defaultSubtitleStyle, type SubtitleStyle } from '../../shared/subtitle-style'
 import { checkWhisperSource, type CheckedFile } from './whisper-source'
 import { toolProgress, type ProgressReporter } from './tool-progress'
 import { mediaIdentity, verifyMediaIdentity, type MediaIdentity } from './media-identity'
@@ -316,6 +319,7 @@ export class PipelineTools {
     log: (line: string, warning?: boolean) => void,
     report: ProgressReporter = () => {},
     subtitleDirectory?: string,
+    style: SubtitleStyle = defaultSubtitleStyle,
   ): Promise<string> {
     report({ phase: 'validate', percent: null })
     const inspection = await this.inspect(tools, input, signal)
@@ -353,7 +357,7 @@ export class PipelineTools {
       throw new Error('字幕时间轴超出视频时长，未执行封装。')
     const subtitle = format === 'ass' ? await availablePath(srt.slice(0, -4) + '.ass') : srt
     if (format === 'ass')
-      await writeFile(subtitle, srtToAss(cues), { encoding: 'utf8', flag: 'wx' })
+      await writeFile(subtitle, srtToAss(cues, style), { encoding: 'utf8', flag: 'wx' })
     try {
       report({ phase: 'mux', percent: null })
       await this.invoke(
@@ -466,12 +470,14 @@ export class PipelineTools {
     if (/[;=\r\n]/.test(sourceDirectory + outputDirectory))
       throw new Error('MDC 目录不能包含分号、等号或换行，请更换目录。')
     const expectedHash = await hashFile(input, signal)
-    const subtitles: { extension: string; hash: string }[] = []
+    const subtitles: { path: string; extension: string; hash: string; stamp: FileStamp }[] = []
     for (const path of companions) {
       if (dirname(path) !== sourceDirectory) throw new Error('MDC 关联输入不在同一目录。')
       if (/\.(srt|ass|vtt)$/i.test(path))
         subtitles.push({
+          path,
           extension: extname(path).toLowerCase(),
+          stamp: await fileStamp(path),
           hash: await hashFile(path, signal),
         })
     }
@@ -544,14 +550,49 @@ export class PipelineTools {
     for (const path of files)
       if (!(await fileStamp(path)).size) throw new MdcItemFailure('MDC 存在空的输出文件，未提交。')
     for (const subtitle of subtitles) {
+      checkpoint(signal)
+      const oldStem = basename(input, extname(input))
+      const nextStem = basename(videos[0]!, extname(videos[0]!))
+      const name = basename(subtitle.path)
+      const target = join(
+        dirname(videos[0]!),
+        name.toLowerCase().startsWith(oldStem.toLowerCase() + '.')
+          ? nextStem + name.slice(oldStem.length)
+          : name,
+      )
+      // 同名字幕内容不同或原已存在时不能覆盖，也不能凭另一条同摘要字幕绕过冲突。
+      if (await exists(target)) {
+        if (
+          !files.some((path) => pathKey(path) === pathKey(target)) ||
+          (await hashFile(target, signal)) !== subtitle.hash
+        )
+          throw new MdcItemFailure('MDC 输出存在同名字幕冲突或字幕内容变化，未覆盖文件。')
+        continue
+      }
       let retained = false
       for (const path of files.filter((path) => extname(path).toLowerCase() === subtitle.extension))
         if ((await hashFile(path, signal)) === subtitle.hash) {
           retained = true
           break
         }
-      if (!retained)
-        throw new MdcItemFailure('MDC 产物缺少原有字幕或字幕内容发生变化，未提交输出。')
+      if (retained) continue
+      // 部分 MDC 单文件模式只移动视频。补交接已登记且未变化的本地字幕，
+      // 保留输入直到任务层登记并校验整个产物包后统一清理。
+      try {
+        await unchanged(subtitle.path, subtitle.stamp)
+        if ((await hashFile(subtitle.path, signal)) !== subtitle.hash)
+          throw new Error('字幕内容变化')
+        await copyChecked(subtitle.path, target, signal)
+        await unchanged(subtitle.path, subtitle.stamp)
+        if ((await hashFile(target, signal)) !== subtitle.hash) throw new Error('字幕交接校验失败')
+        files.push(target)
+        log('MDC 未携带外置字幕，已从本任务输入补齐并核对内容。')
+      } catch (error) {
+        checkpoint(signal)
+        throw new MdcItemFailure('MDC 产物缺少原有字幕，且无法安全补齐；输入和产物已保留。', {
+          cause: error,
+        })
+      }
     }
     return files
   }

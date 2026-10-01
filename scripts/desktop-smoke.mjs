@@ -1,3 +1,4 @@
+import { closeDesktop } from './fixtures/close-desktop.mjs'
 import { _electron as electron, expect } from '@playwright/test'
 import { mkdir, mkdtemp, readFile, rename, utimes, writeFile } from 'node:fs/promises'
 import { resolve, join } from 'node:path'
@@ -6,13 +7,15 @@ import { verifyPreparation } from './desktop-preparation.mjs'
 import { verifyPipeline } from './desktop-pipeline.mjs'
 import { verifyMediaLibrary } from './desktop-media-library.mjs'
 import { verifySingleInstance } from './desktop-single-instance.mjs'
+import { verifySubtitleSettings } from './desktop-subtitle-settings.mjs'
 
 const output = resolve('test-results')
 await mkdir(output, { recursive: true })
 const dataDirectory = await mkdtemp(join(output, 'desktop-profile-'))
 const errors = []
+const backendErrors = []
 const layouts = []
-const pages = ['工作台', 'EMBY媒体库', '任务队列', '偏好配置']
+const pages = ['工作台', 'EMBY媒体库', '热门推荐', '任务队列', '偏好配置']
 const environment = { ...process.env, CYBER_HORSE_DATA_DIR: dataDirectory }
 delete environment.ELECTRON_RUN_AS_NODE
 delete environment.ELECTRON_RENDERER_URL
@@ -24,11 +27,19 @@ async function launch() {
     args: ['.', '--disable-background-timer-throttling'],
     env: environment,
   })
+  app.process().stderr.on('data', (chunk) => {
+    backendErrors.push(chunk.toString('utf8'))
+    if (backendErrors.length > 30) backendErrors.shift()
+  })
   const page = await app.firstWindow()
   page.setDefaultTimeout(15000)
   page.on('pageerror', (error) => errors.push(error.message))
   await expect(page.getByRole('heading', { name: '工作台', exact: true })).toBeVisible()
-  await expect(page.getByRole('navigation', { name: '主导航' }).getByRole('button')).toHaveCount(2)
+  await expect(page.getByRole('navigation', { name: '主导航' }).getByRole('button')).toHaveText([
+    '工作台',
+    'EMBY媒体库',
+    '热门推荐',
+  ])
   await expect(page.getByRole('navigation', { name: '底部导航' }).getByRole('button')).toHaveText([
     '任务队列',
     '偏好配置',
@@ -101,7 +112,13 @@ try {
   expect(await page.evaluate(() => typeof window.require)).toBe('undefined')
   expect(await page.evaluate(() => Object.keys(window.cyberHorse).sort())).toEqual(
     [
+      'generateSubtitlePreview',
+      'cancelSubtitlePreview',
       'getMediaLibraries',
+      'getMediaPopular',
+      'refreshMediaPopular',
+      'cancelMediaPopular',
+      'getMediaPopularPage',
       'getMediaPage',
       'getMediaDetail',
       'getMediaSimilar',
@@ -132,6 +149,11 @@ try {
       'startPipeline',
       'getPipelineState',
       'cancelPipeline',
+      'listWorkspaceTasks',
+      'cancelWorkspaceTask',
+      'previewWorkspaceAction',
+      'confirmWorkspaceAction',
+      'openWorkspaceDirectory',
       'checkPaths',
       'choosePreferencePath',
       'choosePath',
@@ -140,6 +162,9 @@ try {
       'openWorkDirectory',
       'openExecutionRecord',
       'getPerformance',
+      'getShutdownState',
+      'startShutdown',
+      'cancelShutdown',
       'getCredentialStatus',
       'getSettings',
       'getSettingsLocation',
@@ -148,8 +173,26 @@ try {
       'saveCredential',
       'saveSettings',
       'windowControl',
+      'windowReady',
     ].sort(),
   )
+
+  const invalidSubtitleRequests = await page.evaluate(async () => {
+    const results = await Promise.allSettled([
+      window.cyberHorse.generateSubtitlePreview({
+        id: crypto.randomUUID(),
+        style: { fontName: '字体,注入' },
+      }),
+      window.cyberHorse.generateSubtitlePreview({
+        id: crypto.randomUUID(),
+        style: {},
+        path: 'C:/任意媒体',
+      }),
+      window.cyberHorse.cancelSubtitlePreview({ id: '../任意目录' }),
+    ])
+    return results.every((result) => result.status === 'rejected')
+  })
+  expect(invalidSubtitleRequests).toBe(true)
 
   await expect(page.getByRole('button', { name: '运行全部流程', exact: true })).toBeDisabled()
   await expect(page.getByRole('button', { name: '打开预处理目录' })).toBeDisabled()
@@ -166,7 +209,8 @@ try {
     .getByRole('dialog', { name: '运行说明' })
     .getByRole('button', { name: '关闭弹窗' })
     .click()
-  await expect(page.getByRole('button', { name: '配置预处理目录' })).toContainText('配置预处理')
+  await expect(page.getByRole('button', { name: '配置预处理目录' })).toBeVisible()
+  await expect(page.getByRole('checkbox', { name: '全选文件', exact: true })).toBeDisabled()
   await page.getByRole('button', { name: '配置预处理目录' }).click()
   await expect(page.getByRole('heading', { name: '偏好配置', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '偏好设置', exact: true })).toHaveCount(0)
@@ -240,6 +284,7 @@ try {
         (await page.evaluate(() => window.cyberHorse.getSettings())).settings.subtitle.format,
     )
     .toBe('ass')
+  await verifySubtitleSettings(app, page, output, checkLayout)
   await page.getByRole('tab', { name: '路径与工具' }).click()
   await expect(page.getByLabel('下载目录', { exact: true })).toHaveValue(dataDirectory)
   expect(
@@ -338,10 +383,16 @@ try {
   })
 
   const persistentStatusbar = await page.locator('.app-statusbar').elementHandle()
-  for (const theme of ['初号机', '深色', '浅色']) {
+  expect(
+    await page
+      .getByRole('group', { name: '外观模式' })
+      .getByRole('button')
+      .evaluateAll((buttons) => buttons.map((button) => button.getAttribute('aria-label'))),
+  ).toEqual(['浅色模式', '深色模式', '初号机主题', '钢铁侠主题'])
+  for (const theme of ['浅色', '深色', '初号机', '钢铁侠']) {
     await page
       .getByRole('button', {
-        name: theme === '初号机' ? '初号机主题' : `${theme}模式`,
+        name: ['初号机', '钢铁侠'].includes(theme) ? `${theme}主题` : `${theme}模式`,
         exact: true,
       })
       .click()
@@ -403,10 +454,14 @@ try {
   await page.getByRole('button', { name: '工作台', exact: true }).click()
 
   await page.emulateMedia({ colorScheme: 'dark' })
-  await page.getByRole('button', { name: '跟随系统', exact: true }).click()
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await page.getByRole('button', { name: '钢铁侠主题', exact: true }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'ironman')
+  await page.getByRole('button', { name: '初号机主题', exact: true }).focus()
+  await page.keyboard.press('Tab')
+  await expect(page.getByRole('button', { name: '钢铁侠主题', exact: true })).toBeFocused()
+  await page.keyboard.press('Enter')
   await page.emulateMedia({ colorScheme: 'light' })
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'ironman')
   await page.getByRole('button', { name: '深色模式', exact: true }).click()
 
   const mediaDirectory = join(dataDirectory, '验证视频')
@@ -430,7 +485,9 @@ try {
   await expect(page.getByRole('status')).toContainText('配置已保存')
   await page.getByRole('button', { name: '工作台', exact: true }).click()
   await expect(page.locator('.directory-trigger')).toHaveAttribute('title', mediaDirectory)
-  await expect(page.locator('.directory-trigger + .input-refresh')).toHaveCount(1)
+  await expect(page.locator('.directory-trigger + .preparation-run + .input-refresh')).toHaveCount(
+    1,
+  )
   await expect(page.getByRole('button', { name: '工作目录选项' })).toHaveCount(0)
   await page.getByRole('button', { name: '打开预处理目录' }).click()
   expect(await app.evaluate(() => globalThis.openedSettingsFile)).toBe(mediaDirectory)
@@ -452,14 +509,24 @@ try {
     )
   }
   await expect(page.getByLabel('含子目录', { exact: true })).toBeChecked()
-  await expect(page.getByRole('button', { name: '开始预处理', exact: true })).toContainText(
-    '开始预处理',
-  )
+  await expect(page.getByRole('button', { name: '文件预处理', exact: true })).toBeVisible()
+  // 表头全选与行选择联动；取消全选不能将处理范围扩大回整个目录。
+  const selectAllFiles = page.getByRole('checkbox', { name: '全选文件', exact: true })
+  await expect(selectAllFiles).toBeChecked()
+  await selectAllFiles.uncheck()
+  await expect(page.locator('.input-selection-status')).toContainText('已选 0 / 3 个')
+  await expect(page.getByRole('button', { name: '运行全部流程', exact: true })).toBeDisabled()
+  await page.getByRole('checkbox', { name: '勾选 影片 A.mp4', exact: true }).check()
+  await expect(selectAllFiles).toBeChecked({ indeterminate: true })
+  await selectAllFiles.focus()
+  await page.keyboard.press('Space')
+  await expect(selectAllFiles).toBeChecked()
+  await expect(page.locator('.input-selection-status')).toContainText('3 个视频')
   await page.getByRole('button', { name: '关闭提示', exact: true }).click()
-  for (const theme of ['初号机', '深色', '浅色']) {
+  for (const theme of ['浅色', '深色', '初号机', '钢铁侠']) {
     await page
       .getByRole('button', {
-        name: theme === '初号机' ? '初号机主题' : `${theme}模式`,
+        name: ['初号机', '钢铁侠'].includes(theme) ? `${theme}主题` : `${theme}模式`,
         exact: true,
       })
       .click()
@@ -526,10 +593,10 @@ try {
   await page.keyboard.press('Space')
   await expect(stepChoice('视频破解')).toBeChecked()
   await expect(page.getByRole('button', { name: '运行所选 2 步' })).toContainText('运行所选 2 步')
-  for (const theme of ['初号机', '深色', '浅色']) {
+  for (const theme of ['浅色', '深色', '初号机', '钢铁侠']) {
     await page
       .getByRole('button', {
-        name: theme === '初号机' ? '初号机主题' : `${theme}模式`,
+        name: ['初号机', '钢铁侠'].includes(theme) ? `${theme}主题` : `${theme}模式`,
         exact: true,
       })
       .click()
@@ -600,7 +667,7 @@ try {
   await expect(page.getByRole('button', { name: '停止演示', exact: true })).toHaveCount(0)
   await rename(join(mediaDirectory, '影片 A 已移动.mp4'), videoA)
   await page.getByRole('button', { name: '目录全部', exact: true }).click()
-  await page.getByRole('button', { name: '开始预处理', exact: true }).click()
+  await page.getByRole('button', { name: '文件预处理', exact: true }).click()
   await expect(page.getByRole('status')).toContainText('系统或应用目录')
   await expect(page.locator('.directory-trigger')).toHaveAttribute('title', mediaDirectory)
   expect(await readFile(downloadedVideo, 'utf8')).toBe('下载源文件保持不变')
@@ -685,7 +752,7 @@ try {
   expect(rejected).toBe(true)
   await page.getByRole('button', { name: '定时关机', exact: false }).click()
   await expect(page.getByRole('dialog')).toContainText('不会执行系统关机')
-  await page.getByRole('button', { name: '开始倒计时演示' }).click()
+  await page.getByRole('button', { name: '开始倒计时', exact: true }).click()
   await expect(page.getByRole('button', { name: /取消倒计时/ })).toBeVisible()
   await page.getByRole('button', { name: /取消倒计时/ }).click()
   await page.getByRole('button', { name: '工作台', exact: true }).click()
@@ -723,9 +790,21 @@ try {
     animations: 'disabled',
     scale: 'css',
   })
-  await page.getByRole('button', { name: '初号机主题', exact: true }).click()
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'eva')
-  await checkLayout(page, '最小窗口-初号机')
+  for (const [theme, label] of [
+    ['light', '浅色模式'],
+    ['dark', '深色模式'],
+    ['ironman', '钢铁侠主题'],
+    ['eva', '初号机主题'],
+  ]) {
+    await page.getByRole('button', { name: label, exact: true }).click()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
+    await checkLayout(page, `最小窗口-${theme}`)
+    await page.screenshot({
+      path: join(output, `工作台-${theme}-最小窗口.png`),
+      scale: 'css',
+      animations: 'disabled',
+    })
+  }
   await page.screenshot({
     path: join(output, '工作台-初号机-最小窗口.png'),
     animations: 'disabled',
@@ -739,7 +818,7 @@ try {
     scale: 'css',
     animations: 'disabled',
   })
-  await app.close()
+  await closeDesktop(app)
   app = null
   page = await launch()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'eva')
@@ -762,7 +841,7 @@ try {
     ),
   )
   console.log(
-    '桌面验证通过：统一配置、外部文件同步与无效文件保护、进程隔离、初号机及深浅主题、系统跟随、流程完成和取消、全局搜索移除与文件筛选、配置持久化、无效输入拒绝、路径检查、倒计时、最小窗口及重启恢复。',
+    '桌面验证通过：统一配置、外部文件同步与无效文件保护、进程隔离、浅色、深色、初号机及钢铁侠主题、流程完成和取消、全局搜索移除与文件筛选、配置持久化、无效输入拒绝、路径检查、倒计时、最小窗口及重启恢复。',
   )
 } catch (error) {
   if (app) {
@@ -782,10 +861,10 @@ try {
       .catch(() => null)
     await writeFile(
       join(output, 'desktop-smoke-failure.json'),
-      JSON.stringify({ error: String(error), state, errors, layouts }, null, 2),
+      JSON.stringify({ error: String(error), state, errors, backendErrors, layouts }, null, 2),
     )
   }
   throw error
 } finally {
-  if (app) await app.close()
+  if (app) await closeDesktop(app)
 }

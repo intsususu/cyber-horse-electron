@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { CircleHelp, Square } from 'lucide-react'
 import { MediaLibrary } from './MediaLibrary'
+import { MediaPopularPage } from './MediaPopularPage'
 import { pageNames, type Page } from '../data/catalog'
 import type { Workspace } from '../hooks/use-workspace'
 import { Workbench } from './Workbench'
@@ -110,6 +111,7 @@ export function WorkspaceContent({
       )}
 
       <MediaLibrary key={libraryVisit} active={page === 'library'} workspace={workspace} />
+      {page === 'popular' && <MediaPopularPage workspace={workspace} />}
       {page === 'settings' && <SettingsPage workspace={workspace} target={settingsTarget} />}
       {workspace.preparation.plan && (
         <PreparationPreview key={workspace.preparation.plan.id} workspace={workspace} />

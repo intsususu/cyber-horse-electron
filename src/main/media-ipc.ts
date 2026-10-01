@@ -18,6 +18,9 @@ import { MediaProcessService } from './services/media-process'
 import { EmbyClient } from './services/emby-client'
 import { MediaDownloads } from './services/media-downloads'
 import { MediaDeletion } from './services/media-deletion'
+import type { WorkspaceTasks } from './services/workspace-tasks'
+import type { MediaPopularService } from './services/media-popular'
+import { popularPageSchema } from '../shared/media-popular'
 
 export function registerMediaIpc(
   client: EmbyClient,
@@ -25,6 +28,9 @@ export function registerMediaIpc(
   processes: MediaProcessService,
   playback: MediaPlayback,
   validate: (event: IpcMainInvokeEvent) => void,
+  workspaceTasks?: WorkspaceTasks,
+  popular?: MediaPopularService,
+  runTask: <T>(action: () => T | Promise<T>) => Promise<T> = async (action) => action(),
 ) {
   const bind = <T>(channel: string, schema: z.ZodType<T>, action: (value: T) => unknown) => {
     ipcMain.handle(channel, async (event, ...args: unknown[]) => {
@@ -32,10 +38,24 @@ export function registerMediaIpc(
       if (args.length > 1) throw new Error('媒体库参数无效。')
       const parsed = schema.safeParse(args[0])
       if (!parsed.success) throw new Error('媒体库参数无效。')
+      if (
+        [
+          channels.startMediaDownload,
+          channels.enqueueMediaProcess,
+          channels.startMediaProcess,
+        ].some((value) => value === channel)
+      )
+        return runTask(() => action(parsed.data))
       return action(parsed.data)
     })
   }
   bind(channels.getMediaLibraries, z.undefined(), () => client.libraries())
+  if (popular) {
+    bind(channels.getMediaPopular, z.undefined(), () => popular.state())
+    bind(channels.refreshMediaPopular, z.undefined(), () => popular.refresh())
+    bind(channels.cancelMediaPopular, z.undefined(), () => popular.cancel())
+    bind(channels.getMediaPopularPage, popularPageSchema, (query) => popular.page(query))
+  }
   bind(channels.openMediaLink, mediaLinkSchema, async ({ id, target }) => {
     const url = await client.externalLink(id, target)
     try {
@@ -75,11 +95,21 @@ export function registerMediaIpc(
   bind(channels.getMediaProcesses, z.undefined(), () => processes.snapshot())
   bind(channels.getMediaQueueSummary, z.undefined(), async () => {
     const summary = processes.queueSummary()
-    return { active: summary.active + (await downloads.activeCountExcluding(summary.downloadIds)) }
+    const tasks = workspaceTasks
+      ? (await workspaceTasks.list()).tasks.filter((view) => view.active)
+      : []
+    return {
+      active:
+        summary.active +
+        tasks.filter((view) => !summary.workspaceIds.has(view.task.id)).length +
+        (await downloads.activeCountExcluding(summary.downloadIds)),
+      ...(workspaceTasks ? { unified: true } : {}),
+    }
   })
   bind(channels.cancelMediaProcess, z.string().uuid(), (id) => processes.cancel(id))
   bind(channels.clearMediaTasks, z.undefined(), async () => {
     await downloads.clearFinished()
     processes.clearFinished()
+    await workspaceTasks?.clearHistory()
   })
 }

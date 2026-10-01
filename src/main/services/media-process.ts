@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, extname, join, relative } from 'node:path'
-import { mkdir, opendir, open, rename } from 'node:fs/promises'
+import { mkdir, opendir, open } from 'node:fs/promises'
 import type { Settings } from '../../shared/contracts'
 import type {
   MediaEnqueueResult,
@@ -16,15 +16,16 @@ import { PipelineTools } from './pipeline-tools'
 import { mediaExtensions } from './media-inputs'
 import { canonicalVideoName } from './video-name'
 import { redactToolLine } from './tool-process'
+import { WorkspaceTasks, taskConfiguration, taskServer } from './workspace-tasks'
+import { publishNasFile } from './task-nas-publisher'
+import type { TaskFile } from '../../shared/task-workspace'
 import {
   checkpoint,
   availablePath,
-  copyChecked,
   exists,
   fileStamp,
   hashFile,
   inside,
-  makeDirectory,
   overlap,
   pathKey,
   moveChecked,
@@ -71,11 +72,19 @@ export class MediaProcessService {
     private settings: () => Promise<Settings>,
     private lock: ExecutionLock,
     private tools = new PipelineTools(),
+    private workspaceTasks?: WorkspaceTasks,
   ) {}
   get active() {
     return !!this.work || this.previewing
   }
+  get failedTaskIds() {
+    return this.records.filter((record) => record.status === 'failed').map((record) => record.id)
+  }
   snapshot() {
+    if (this.workspaceTasks)
+      for (const record of this.records)
+        if (record.workspaceTaskId)
+          record.pipeline = this.workspaceTasks.project(record.workspaceTaskId)
     if (this.current && this.processor) this.current.pipeline = this.processor.snapshot()
     return structuredClone(this.records)
   }
@@ -84,6 +93,12 @@ export class MediaProcessService {
       active: this.records.filter((record) => ['pending', 'running'].includes(record.status))
         .length,
       downloadIds: new Set(this.records.map((record) => record.downloadId).filter(Boolean)),
+      workspaceIds: new Set(
+        this.records
+          .filter((record) => ['pending', 'running'].includes(record.status))
+          .map((record) => record.workspaceTaskId)
+          .filter(Boolean),
+      ),
     }
   }
   clearFinished() {
@@ -100,7 +115,7 @@ export class MediaProcessService {
     )
     if (existing) return { id: existing.id, alreadyQueued: true }
     if (this.queue.length >= 20) throw new Error('待处理任务已达上限。')
-    if (!this.release) this.release = this.lock.acquire('媒体库复合任务')
+    if (!this.workspaceTasks && !this.release) this.release = this.lock.acquire('媒体库复合任务')
     const id = randomUUID()
     const queued: QueueRequest = {
       id,
@@ -197,15 +212,20 @@ export class MediaProcessService {
       )
         throw new Error('NAS 原视频与服务器媒体版本大小不一致。')
       const roots: string[] = [parent]
-      for (const key of [
-        'preprocess',
-        'mdcOutput',
-        kind === 'subtitle' ? 'whisperOutput' : 'videoOutput',
-        'download',
-      ] as const) {
+      const directoryKeys = this.workspaceTasks
+        ? (['download'] as const)
+        : ([
+            'preprocess',
+            'mdcOutput',
+            kind === 'subtitle' ? 'whisperOutput' : 'videoOutput',
+            'download',
+          ] as const)
+      for (const key of directoryKeys) {
         const root = await safeRoot(
           key === 'download'
-            ? settings.paths.download || settings.mediaServer.downloadDirectory
+            ? this.workspaceTasks
+              ? settings.paths.download
+              : settings.paths.download || settings.mediaServer.downloadDirectory
             : settings.paths[key],
           this.protectedPaths,
         )
@@ -219,6 +239,7 @@ export class MediaProcessService {
         settings,
         steps,
         AbortSignal.any([preflightSignal, AbortSignal.timeout(60000)]),
+        !!this.workspaceTasks,
       )
       checkpoint(preflightSignal)
       const plan: MediaProcessPlan = {
@@ -234,7 +255,7 @@ export class MediaProcessService {
           kind === 'subtitle' ? '提取中文字幕并封装' : '视频破解',
           'MDC 元数据刮削',
           '校验并回写原媒体目录',
-          '刷新 Emby 项目',
+          this.workspaceTasks ? '重新发现并核对 Emby 媒体，未确认则待收尾' : '刷新 Emby 项目',
         ],
       }
       for (const [id, entry] of this.plans) if (entry.expires < Date.now()) this.plans.delete(id)
@@ -285,7 +306,7 @@ export class MediaProcessService {
     )
       throw new Error('此媒体已有待处理或运行中的复合任务。')
     if (this.queue.length >= 20) throw new Error('待处理任务已达上限。')
-    if (!this.release) this.release = this.lock.acquire('媒体库复合任务')
+    if (!this.workspaceTasks && !this.release) this.release = this.lock.acquire('媒体库复合任务')
     this.plans.delete(id)
     this.queue.push(plan)
     this.records.push({
@@ -320,6 +341,7 @@ export class MediaProcessService {
     if (record.status === 'running') {
       this.controller?.abort()
       this.processor?.cancel()
+      if (record.workspaceTaskId) this.workspaceTasks?.cancel(record.workspaceTaskId)
       if (record.downloadId) this.downloads.cancel(record.downloadId)
     }
   }
@@ -411,9 +433,77 @@ export class MediaProcessService {
         }
         await new Promise((resolve) => setTimeout(resolve, 150))
       }
-      if ((await hashFile(download.path, signal)) !== (await hashFile(record.original, signal)))
-        throw new Error('下载内容与所选 NAS 文件不一致，已停止回写。')
+      // 下载服务已校验响应长度；这里只查询 NAS 元数据，禁止再次下载原视频计算摘要。
+      for (const [path, stamp] of plan.stamps) await unchanged(path, stamp)
+      if ((await fileStamp(download.path)).size !== plan.stamps.get(record.original)!.size)
+        throw new Error('下载大小与所选 NAS 文件不一致，已停止回写。')
       const settings = structuredClone(plan.settings)
+      if (this.workspaceTasks) {
+        // 在任务处理和 NAS 发布前持久化；读取失败必须保留原媒体。
+        const userData = await this.client.captureUserData(record.itemId, signal)
+        const detail = await this.client.detail(record.itemId, signal)
+        const remote =
+          detail.sources.find((source) => source.id === record.sourceId)?.path ?? detail.path
+        const replacements = []
+        for (const [path, stamp] of plan.stamps)
+          replacements.push({
+            path,
+            stamp,
+            sha256: null,
+            removed: false,
+            removalPending: false,
+          })
+        const taskId = await this.workspaceTasks.enqueue(
+          settings,
+          {
+            origin: 'media-library',
+            steps: [record.kind === 'subtitle' ? 'subtitle-mux' : 'video', 'scrape'],
+            destination: { kind: 'media-original', root: dirname(record.original) },
+            files: [
+              {
+                path: download.path,
+                companionBase: record.original,
+                companions: [...plan.stamps.keys()].filter((path) => path !== record.original),
+              },
+            ],
+            context: {
+              configuration: taskConfiguration(settings),
+              media: { processId: record.id, downloadId: download.id, name: record.name },
+              replacements,
+              sync: {
+                server: taskServer(settings),
+                serverIdentity: await this.client.serverIdentity(),
+                itemId: record.itemId,
+                originalRemotePath: remote,
+                userData,
+                state: 'pending',
+                message: '',
+              },
+            },
+          },
+          [
+            ...new Set(
+              [
+                settings.paths.download,
+                settings.mediaServer.downloadDirectory,
+                settings.paths.nas,
+              ].filter(Boolean),
+            ),
+          ],
+        )
+        record.workspaceTaskId = taskId
+        await write({ type: '任务工作目录', taskId })
+        const result = await this.workspaceTasks.wait(taskId)
+        record.pipeline = this.workspaceTasks.project(taskId)
+        record.status =
+          result?.state === 'completed'
+            ? 'completed'
+            : result?.state === 'cancelled'
+              ? 'cancelled'
+              : 'failed'
+        record.message = result?.message ?? '任务结果暂不可确认，请查看任务队列中的残留任务。'
+        return
+      }
       const name =
         canonicalVideoName(basename(download.path, extname(download.path))) ||
         basename(download.path, extname(download.path))
@@ -517,38 +607,50 @@ export class MediaProcessService {
         staged: join(dirname(target), '.horse-' + randomUUID() + '.partial'),
       }
     })
-    const prepared: string[] = []
-    const published: string[] = []
-    try {
-      for (const entry of targets) {
-        if ((await exists(entry.target)) && !plan.stamps.has(entry.target))
-          throw new Error('回写将覆盖未预览的文件，已停止。')
-        await makeDirectory(parent, dirname(entry.target))
-        await copyChecked(entry.source, entry.staged, signal)
-        prepared.push(entry.staged)
+    const publications: TaskFile['publications'] = []
+    for (const [path, stamp] of plan.stamps) await unchanged(path, stamp)
+    for (const entry of targets) {
+      if ((await exists(entry.target)) && !plan.stamps.has(entry.target))
+        throw new Error('回写将覆盖未预览的文件，已停止。')
+      const publication: TaskFile['publications'][number] = {
+        source: basename(entry.source),
+        target: entry.target,
+        previous: plan.stamps.get(entry.target) ?? null,
+        size: (await fileStamp(entry.source)).size,
+        sha256: await hashFile(entry.source, signal),
+        state: 'committing',
       }
-      for (const [path, stamp] of plan.stamps) await unchanged(path, stamp)
-      for (const entry of targets) {
-        checkpoint(signal)
-        await write({ type: '准备发布', target: entry.target })
-        const previous = plan.stamps.get(entry.target)
-        if (previous) {
-          await unchanged(entry.target, previous)
-          // 同目录原子替换，只在新文件已完整校验后覆盖清单内的旧文件。
-          await rename(entry.staged, entry.target)
-        } else await moveChecked(entry.staged, entry.target, signal)
-        published.push(entry.target)
-      }
-      for (const [path, stamp] of plan.stamps) {
-        if (published.some((target) => pathKey(target) === pathKey(path))) continue
-        await write({ type: '删除旧文件', path })
-        await removeChecked(path, parent, stamp, signal)
-      }
-      await write({ type: '回写完成', published })
-    } finally {
-      for (const path of prepared)
-        if (await exists(path))
-          await removeChecked(path, parent, await fileStamp(path), new AbortController().signal)
+      await write({ type: '准备发布', publication })
+      await publishNasFile(
+        parent,
+        entry.source,
+        entry.staged,
+        publication,
+        signal,
+        async (message) => write({ type: '发布快照', message, publication }),
+        async () => {
+          if (
+            configKey(await this.settings()) !== configKey(plan.settings) ||
+            plan.generation !== this.client.generation
+          )
+            throw new Error('处理期间配置或连接已变化，已停止回写。')
+        },
+      )
+      publications.push(publication)
     }
+    for (const publication of publications)
+      await unchanged(publication.target, publication.targetStamp!)
+    for (const [path, stamp] of plan.stamps) {
+      if (publications.some((publication) => pathKey(publication.target) === pathKey(path)))
+        continue
+      for (const publication of publications)
+        await unchanged(publication.target, publication.targetStamp!)
+      await write({ type: '删除旧文件', path })
+      await removeChecked(path, parent, stamp, signal)
+    }
+    await write({
+      type: '回写完成',
+      published: publications.map((publication) => publication.target),
+    })
   }
 }

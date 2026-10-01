@@ -3,6 +3,21 @@ import type { DesktopApi } from '../shared/contracts'
 import { channels } from '../shared/channels'
 
 const api: DesktopApi = {
+  getShutdownState: () => ipcRenderer.invoke(channels.getShutdownState),
+  startShutdown: (request) => ipcRenderer.invoke(channels.startShutdown, request),
+  cancelShutdown: () => ipcRenderer.invoke(channels.cancelShutdown),
+  generateSubtitlePreview: (request) =>
+    ipcRenderer.invoke(channels.generateSubtitlePreview, request),
+  cancelSubtitlePreview: (request) => ipcRenderer.invoke(channels.cancelSubtitlePreview, request),
+  getMediaPopular: () => ipcRenderer.invoke(channels.getMediaPopular),
+  refreshMediaPopular: () => ipcRenderer.invoke(channels.refreshMediaPopular),
+  cancelMediaPopular: () => ipcRenderer.invoke(channels.cancelMediaPopular),
+  getMediaPopularPage: (query) => ipcRenderer.invoke(channels.getMediaPopularPage, query),
+  listWorkspaceTasks: () => ipcRenderer.invoke(channels.listWorkspaceTasks),
+  cancelWorkspaceTask: (request) => ipcRenderer.invoke(channels.cancelWorkspaceTask, request),
+  previewWorkspaceAction: (request) => ipcRenderer.invoke(channels.previewWorkspaceAction, request),
+  confirmWorkspaceAction: (request) => ipcRenderer.invoke(channels.confirmWorkspaceAction, request),
+  openWorkspaceDirectory: (request) => ipcRenderer.invoke(channels.openWorkspaceDirectory, request),
   openExecutionRecord: (request) => ipcRenderer.invoke(channels.openExecutionRecord, request),
   openMediaLink: (request) => ipcRenderer.invoke(channels.openMediaLink, request),
   openMediaPlayback: (request) => ipcRenderer.invoke(channels.openMediaPlayback, request),
@@ -55,6 +70,7 @@ const api: DesktopApi = {
   refreshInputs: (request) => ipcRenderer.invoke(channels.refreshInputs, request),
   openWorkDirectory: (source) => ipcRenderer.invoke(channels.openWorkDirectory, source),
   getPerformance: () => ipcRenderer.invoke(channels.getPerformance),
+  windowReady: () => ipcRenderer.invoke(channels.windowReady),
   windowControl: (action) => ipcRenderer.invoke(channels.windowControl, action),
 }
 contextBridge.exposeInMainWorld('cyberHorse', api)

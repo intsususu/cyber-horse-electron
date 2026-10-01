@@ -124,7 +124,7 @@ export async function verifyPlayerControls(app, page, output) {
   await page.keyboard.press('ArrowRight')
   await expect.poll(() => video.evaluate((element) => Math.round(element.currentTime))).toBe(45)
 
-  for (const theme of ['初号机主题', '深色模式', '浅色模式', '跟随系统']) {
+  for (const theme of ['初号机主题', '深色模式', '浅色模式', '钢铁侠主题']) {
     await run(theme)
     await controls.hover()
     await expect.poll(() => opacity(controls)).toBe(1)

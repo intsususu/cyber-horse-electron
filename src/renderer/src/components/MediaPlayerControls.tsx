@@ -44,12 +44,8 @@ export function MediaPlayerControls({
   onMute,
   subtitles,
   subtitleIndex,
-  subtitleLoaded,
-  subtitleRetrying,
-  firstSubtitleAt,
-  subtitleError,
-  subtitleRestartRequired,
   onSubtitle,
+  silentPreview = false,
 }: {
   ready: boolean
   paused: boolean
@@ -66,32 +62,12 @@ export function MediaPlayerControls({
   onMute: () => void
   subtitles: MediaSubtitle[]
   subtitleIndex: number | null
-  subtitleLoaded: boolean
-  subtitleRetrying: boolean
-  firstSubtitleAt: number | null
-  subtitleError: string
-  subtitleRestartRequired: boolean
   onSubtitle: (index: number | null) => void
+  silentPreview?: boolean
 }) {
   const [preview, setPreview] = useState<number | null>(null)
   const pending = useRef<number | null>(null)
   const shownTime = preview ?? position
-  const subtitleHint =
-    subtitleIndex === null
-      ? ''
-      : subtitleRestartRequired
-        ? '字幕需重启应用'
-        : subtitleError
-          ? '字幕加载失败'
-          : subtitleRetrying
-            ? '正在重试字幕…'
-            : !subtitleLoaded
-              ? '正在加载字幕…'
-              : firstSubtitleAt === null
-                ? '字幕轨没有内容'
-                : position < firstSubtitleAt
-                  ? `首条字幕 ${time(firstSubtitleAt)}`
-                  : ''
   const commit = () => {
     const value = pending.current
     pending.current = null
@@ -176,34 +152,34 @@ export function MediaPlayerControls({
         <span className="media-player-time" aria-hidden="true">
           {time(shownTime)} <span>/ {time(duration)}</span>
         </span>
-        <div className="media-player-audio">
-          <button
-            className="media-player-button media-player-icon"
-            onClick={onMute}
-            aria-label={muted || volume === 0 ? '取消静音' : '静音'}
-            title={muted || volume === 0 ? '取消静音' : '静音'}
-          >
-            {muted || volume === 0 ? <VolumeX size={20} /> : <Volume2 size={20} />}
-          </button>
-          <input
-            className="media-player-range media-player-volume"
-            type="range"
-            min={0}
-            max={1}
-            step={0.05}
-            value={muted ? 0 : volume}
-            style={progress(muted ? 0 : volume, 1)}
-            aria-label="音量"
-            aria-valuetext={`${Math.round((muted ? 0 : volume) * 100)}%`}
-            onChange={(event) => onVolume(Number(event.target.value))}
-          />
-        </div>
-        <MediaSubtitlePicker subtitles={subtitles} value={subtitleIndex} onChange={onSubtitle} />
-        {subtitleHint && (
-          <span className="media-player-subtitle-hint" role="status" title={subtitleHint}>
-            {subtitleHint}
-          </span>
+        {!silentPreview && (
+          <div className="media-player-audio">
+            <button
+              className="media-player-button media-player-icon"
+              onClick={onMute}
+              aria-label={muted || volume === 0 ? '取消静音' : '静音'}
+              title={muted || volume === 0 ? '取消静音' : '静音'}
+            >
+              {muted || volume === 0 ? <VolumeX size={20} /> : <Volume2 size={20} />}
+            </button>
+            <input
+              className="media-player-range media-player-volume"
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={muted ? 0 : volume}
+              style={progress(muted ? 0 : volume, 1)}
+              aria-label="音量"
+              aria-valuetext={`${Math.round((muted ? 0 : volume) * 100)}%`}
+              onChange={(event) => onVolume(Number(event.target.value))}
+            />
+          </div>
         )}
+        {!silentPreview && (
+          <MediaSubtitlePicker subtitles={subtitles} value={subtitleIndex} onChange={onSubtitle} />
+        )}
+        {silentPreview && <span className="subtitle-player-caption">ASS 字幕预览 · 无声片段</span>}
         <button
           className="media-player-button media-player-icon"
           onClick={onFullscreen}

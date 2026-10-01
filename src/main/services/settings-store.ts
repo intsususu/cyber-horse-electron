@@ -1,5 +1,6 @@
 import { watchFile, unwatchFile } from 'node:fs'
-import { mkdir, readFile, rename, writeFile, copyFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, copyFile } from 'node:fs/promises'
+import { replaceRecordFile } from './record-replacement'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import {
@@ -88,7 +89,7 @@ export class SettingsStore {
     const source = JSON.stringify(settings, null, 2) + '\n'
     const temporary = this.filePath + '.tmp'
     await writeFile(temporary, source, 'utf8')
-    await rename(temporary, this.filePath)
+    await replaceRecordFile(temporary, this.filePath)
     this.lastSource = source
   }
 

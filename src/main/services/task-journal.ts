@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto'
-import { lstat, open, readFile, rename, unlink } from 'node:fs/promises'
+import { lstat, open, readFile, unlink } from 'node:fs/promises'
+import { replaceRecordFile } from './record-replacement'
 import { join } from 'node:path'
 import { z } from 'zod'
 import {
   taskFileSchema,
   taskManifestSchema,
   taskStateSchema,
+  taskContextSchema,
   type TaskManifest,
 } from '../../shared/task-workspace'
 import { checkDirectory, pathKey } from './safe-files'
@@ -18,8 +20,10 @@ const maximumJournalBytes = 32 * 1024 * 1024
 const patchSchema = z
   .object({
     state: taskStateSchema.optional(),
+    removalAction: z.enum(['keep', 'delete']).optional(),
     message: z.string().max(2000).optional(),
     files: z.array(taskFileSchema).max(5000).optional(),
+    context: taskContextSchema.nullable().optional(),
   })
   .strict()
 const eventSchema = z.discriminatedUnion('kind', [
@@ -90,7 +94,7 @@ export async function writeTaskJson(
   if (current.ino !== identity.ino || current.dev !== identity.dev)
     throw new Error('任务记录目录已被替换，未继续提交。')
   await regularFile(target, maximumSnapshotBytes)
-  await rename(temporary, target)
+  await replaceRecordFile(temporary, target)
 }
 
 function applyPatch(
@@ -110,7 +114,12 @@ function applyPatch(
         directory: value.directory,
         name: value.name,
         number: value.number,
-        sources: value.sources.map(({ path, stamp, target }) => ({ path, stamp, target })),
+        sources: value.sources.map(({ path, stamp, target, copy }) => ({
+          path,
+          stamp,
+          target,
+          copy,
+        })),
       })
     if (original(file) !== original(next)) throw new Error('任务原始清单不能在执行中改写。')
     return next

@@ -1,11 +1,10 @@
-import { Monitor } from 'lucide-react'
 import type { Theme } from '../../../shared/contracts'
 
 export const themeOptions = [
   { value: 'light', label: '浅色', name: '浅色模式' },
-  { value: 'eva', label: '初号机', name: '初号机主题' },
   { value: 'dark', label: '深色', name: '深色模式' },
-  { value: 'system', label: '跟随系统', name: '跟随系统' },
+  { value: 'eva', label: '初号机', name: '初号机主题' },
+  { value: 'ironman', label: '钢铁侠', name: '钢铁侠主题' },
 ] as const
 
 export function ThemePicker({
@@ -35,9 +34,7 @@ export function ThemePicker({
           disabled={disabled}
           onClick={() => onChange(theme.value)}
         >
-          <span className={`theme-swatch swatch-${theme.value}`}>
-            {theme.value === 'system' && <Monitor size={15} />}
-          </span>
+          <span className={`theme-swatch swatch-${theme.value}`} />
           {!compact && <span>{theme.label}</span>}
         </button>
       ))}

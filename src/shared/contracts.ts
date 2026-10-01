@@ -1,9 +1,14 @@
 import { z } from 'zod'
+import type { SubtitlePreviewRequest, SubtitlePreviewResult } from './subtitle-preview'
+import { subtitleStyleSchema, defaultSubtitleStyle } from './subtitle-style'
 import { javbusUrlSchema } from './media-links'
 import type { MediaLibraryApi } from './media-library'
+import type { MediaPopularApi } from './media-popular'
 import type { PreparationPlan, PreparationState } from './preparation'
 import type { PipelinePlan, PipelineRequest, PipelineState } from './pipeline'
 import type { ExecutionRecordRequest } from './execution-record'
+import type { TaskApi } from './task-workspace'
+import type { ShutdownApi } from './shutdown'
 
 export const pathKeys = [
   'download',
@@ -23,7 +28,7 @@ export type WorkDirectoryKey = (typeof workDirectoryKeys)[number]
 export const openDirectoryKeys = ['preprocess', 'current', ...workDirectoryKeys] as const
 export type OpenDirectoryKey = (typeof openDirectoryKeys)[number]
 export const toolKeys: PathKey[] = ['mdc', 'whisper', 'mkvmerge', 'jasna']
-export const themeSchema = z.enum(['light', 'dark', 'system', 'eva'])
+export const themeSchema = z.enum(['light', 'dark', 'eva', 'ironman'])
 export type Theme = z.infer<typeof themeSchema>
 const pathValueSchema = z
   .string()
@@ -56,7 +61,7 @@ const pathsSchema = z
 const legacySettingsSchema = z
   .object({
     version: z.literal(1),
-    theme: themeSchema,
+    theme: z.union([themeSchema, z.literal('system')]),
     paths: pathsSchema.extend({ mdcLogDirectory: pathValueSchema.optional() }),
   })
   .strict()
@@ -65,7 +70,7 @@ export const settingsSchema = z
     version: z.literal(2),
     theme: themeSchema,
     paths: pathsSchema,
-    subtitle: z.object({ format: z.enum(['srt', 'ass']) }).strict(),
+    subtitle: subtitleStyleSchema.extend({ format: z.enum(['srt', 'ass']) }),
     player: z.object({ startMuted: z.boolean() }).strict().default({ startMuted: true }),
     mediaServer: z
       .object({
@@ -91,7 +96,7 @@ export const defaultSettings: Settings = {
   paths: {
     ...(Object.fromEntries(pathKeys.map((key) => [key, ''])) as Record<PathKey, string>),
   },
-  subtitle: { format: 'srt' },
+  subtitle: { ...defaultSubtitleStyle, format: 'srt' },
   player: { startMuted: true },
   mediaServer: { serverUrl: '', username: '', downloadDirectory: '', javbusUrl: '' },
   privacyCover: { posterPath: '', thumbPath: '', defaultEyeOpen: true },
@@ -105,12 +110,13 @@ export function parseStoredSettings(value: unknown): Settings {
     delete paths.mdcLogDirectory
     return settingsSchema.parse({
       ...structuredClone(defaultSettings),
-      theme: legacy.theme,
+      theme: legacy.theme === 'system' ? defaultSettings.theme : legacy.theme,
       paths,
     })
   }
   if (version === 2 && typeof value === 'object' && value !== null) {
     const current = { ...value } as Record<string, unknown>
+    if (current.theme === 'system') current.theme = defaultSettings.theme
     delete current.accentColor
     if (typeof current.paths === 'object' && current.paths !== null) {
       const paths = { ...current.paths } as Record<string, unknown>
@@ -172,7 +178,9 @@ export type PerformanceSnapshot = {
     interfaces: string[]
   }
 }
-export interface DesktopApi extends MediaLibraryApi {
+export interface DesktopApi extends MediaLibraryApi, MediaPopularApi, TaskApi, ShutdownApi {
+  generateSubtitlePreview(request: SubtitlePreviewRequest): Promise<SubtitlePreviewResult>
+  cancelSubtitlePreview(request: { id: string }): Promise<void>
   openExecutionRecord(request: ExecutionRecordRequest): Promise<void>
   previewPipeline(request: PipelineRequest): Promise<PipelinePlan>
   startPipeline(request: { planId: string }): Promise<PipelineState>
@@ -196,5 +204,6 @@ export interface DesktopApi extends MediaLibraryApi {
   refreshInputs(request: RefreshInputRequest): Promise<InputSelection>
   openWorkDirectory(key: OpenDirectoryKey): Promise<void>
   getPerformance(): Promise<PerformanceSnapshot>
+  windowReady(): Promise<void>
   windowControl(action: 'minimize' | 'maximize' | 'close'): Promise<void>
 }

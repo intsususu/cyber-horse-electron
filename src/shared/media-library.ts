@@ -10,7 +10,8 @@ const namedSchema = z
   .strict()
 export const mediaQuerySchema = z
   .object({
-    libraryId: mediaIdSchema,
+    // 未指定媒体库时，查询当前账号可访问的全部媒体。
+    libraryId: mediaIdSchema.optional(),
     start: z.number().int().min(0).max(10000000),
     limit: z.number().int().min(1).max(100),
     sort: z.enum(['DateCreated', 'DatePlayed', 'PlayCount']),
@@ -105,6 +106,17 @@ export type MediaDetail = LibraryVideo & {
   canDelete: boolean
   canDownload: boolean
 }
+export type MediaPublicationRequest = {
+  itemId: string
+  path: string
+  size: number
+  chinese: boolean
+}
+export type MediaPublicationCheck = {
+  state: 'confirmed' | 'not-found' | 'ambiguous' | 'size-mismatch' | 'subtitle-missing'
+  itemId: string | null
+  message: string
+}
 export type MediaDownload = {
   id: string
   itemId: string
@@ -119,7 +131,7 @@ export type MediaDownload = {
   started: string
   ended: string | null
 }
-export type MediaQueueSummary = { active: number }
+export type MediaQueueSummary = { active: number; unified?: boolean }
 export const mediaEnqueueSchema = z
   .object({
     id: mediaIdSchema,
@@ -184,4 +196,5 @@ export type MediaProcessState = MediaProcessPlan & {
   pipeline: import('./pipeline').PipelineState | null
   downloadId: string
   journal: string
+  workspaceTaskId?: string
 }

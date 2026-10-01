@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 export const executionRecordSchema = z
   .object({
-    kind: z.enum(['media-process', 'pipeline', 'preparation']),
+    kind: z.enum(['media-process', 'pipeline', 'preparation', 'workspace-tasks']),
     id: z.string().uuid(),
   })
   .strict()

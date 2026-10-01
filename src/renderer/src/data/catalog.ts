@@ -37,10 +37,11 @@ export const pathLabels: Record<PathKey, string> = {
   mkvmerge: 'MKVToolNix',
   jasna: 'Jasna',
 }
-export type Page = 'overview' | 'queue' | 'library' | 'settings'
+export type Page = 'overview' | 'queue' | 'library' | 'popular' | 'settings'
 export const pageNames: Record<Page, string> = {
   overview: '工作台',
   queue: '任务队列',
   library: 'EMBY媒体库',
+  popular: '热门推荐',
   settings: '偏好配置',
 }

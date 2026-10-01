@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as fs from 'node:fs/promises'
+import * as timers from 'node:timers/promises'
 import { mkdtemp, mkdir, readFile, writeFile, readdir, copyFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, extname, join, parse } from 'node:path'
@@ -18,10 +19,14 @@ import { MediaDownloads } from '../src/main/services/media-downloads'
 import { MediaProcessService } from '../src/main/services/media-process'
 import { PipelineTools } from '../src/main/services/pipeline-tools'
 import { ExecutionLock } from '../src/main/services/execution-lock'
+import { inside } from '../src/main/services/safe-files'
+import { WorkspaceTasks } from '../src/main/services/workspace-tasks'
 
 vi.mock('node:fs/promises', async (original) => ({ ...(await original<typeof fs>()) }))
+vi.mock('node:timers/promises', async (original) => ({ ...(await original<typeof timers>()) }))
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -55,7 +60,7 @@ async function fixture() {
     Path: '/server/影片/ABC-123.mp4',
     Genres: ['剧情'],
     People: [{ Id: 12, Name: '演员', Role: '主角' }],
-    UserData: { IsFavorite: false },
+    UserData: { IsFavorite: false, PlayCount: 3, Played: true, PlaybackPositionTicks: 0 },
     MediaSources: [
       {
         Id: 's1',
@@ -99,9 +104,25 @@ async function fixture() {
       if (mode === '过期') return new Response('', { status: 401 })
       if (mode === '禁止') return new Response('', { status: 403 })
       if (mode === '坏响应') return Response.json({ Items: '错误' })
+      if (mode === '旧 ID 失效' && parsed.pathname.endsWith('/Items/v1/Refresh'))
+        return new Response(null, { status: 404 })
       if (parsed.pathname.endsWith('/Views'))
         return Response.json({ Items: [{ Id: 'lib', Name: '影片库' }] })
-      if (parsed.pathname.endsWith('/Items/v1')) return Response.json(item)
+      if (parsed.pathname.endsWith('/Items') && parsed.searchParams.has('Path')) {
+        const matches = (catalog ?? [item]).filter(
+          (value) =>
+            value.Path === parsed.searchParams.get('Path') ||
+            value.MediaSources.some((source) => source.Path === parsed.searchParams.get('Path')),
+        )
+        return Response.json({
+          Items: matches.slice(0, Number(parsed.searchParams.get('Limit') ?? 100)),
+          TotalRecordCount: matches.length,
+        })
+      }
+      if (parsed.pathname.endsWith('/Items/v1'))
+        return mode === '旧 ID 失效' ? new Response(null, { status: 404 }) : Response.json(item)
+      const discovered = catalog?.find((value) => parsed.pathname.endsWith('/Items/' + value.Id))
+      if (discovered) return Response.json(discovered)
       if (parsed.pathname.endsWith('/Subtitles/2/Stream.vtt'))
         return new Response('WEBVTT\n\n00:00:00.000 --> 00:00:03.000\n中文字幕\n', {
           headers: { 'content-type': 'text/vtt' },
@@ -193,6 +214,279 @@ const query = {
   favorites: true,
   filter: { kind: 'person' as const, id: '12', name: '演员' },
 }
+
+describe('Emby 发布核对', () => {
+  it('大型媒体库的新 ID 按完整路径两次查询确认，不扫描全库或刷新旧 ID', async () => {
+    const f = await fixture()
+    try {
+      f.mode('旧 ID 失效')
+      const replacement = structuredClone(f.item)
+      replacement.Id = 'new-id'
+      replacement.Path = '/server/影片/ABC-123-UC.mkv'
+      replacement.MediaSources[0]!.Path = replacement.Path
+      const catalog = Array.from({ length: 5100 }, (_, index) => ({
+        ...structuredClone(f.item),
+        Id: `other-${index}`,
+      }))
+      f.setCatalog([...catalog, replacement])
+      expect(
+        await f.client.synchronizePublished(
+          { itemId: 'v1', path: replacement.Path, size: payload.length, chinese: true },
+          new AbortController().signal,
+        ),
+      ).toBe(true)
+      const queries = f.calls.filter((call) => !call.url.pathname.endsWith('AuthenticateByName'))
+      expect(queries).toHaveLength(2)
+      expect(queries.every((call) => call.init.method === 'GET')).toBe(true)
+      expect(queries[0]!.url.pathname).toBe('/emby/Items')
+      expect(queries[0]!.url.searchParams.get('Path')).toBe(replacement.Path)
+      expect(queries[0]!.url.searchParams.get('UserId')).toBe('u1')
+      expect(queries[0]!.url.searchParams.get('Limit')).toBe('2')
+      expect(queries[1]!.url.pathname).toBe('/emby/Users/u1/Items/new-id')
+    } finally {
+      await fs.rm(f.root, { recursive: true, force: true })
+    }
+  })
+  it('路径已发现但大小或字幕未匹配时报告具体原因，不伪报完成', async () => {
+    const f = await fixture()
+    try {
+      const request = { itemId: 'v1', path: f.item.Path, size: payload.length + 1, chinese: true }
+      expect(await f.client.inspectPublished(request, new AbortController().signal)).toMatchObject({
+        state: 'size-mismatch',
+        itemId: 'v1',
+      })
+      f.item.MediaSources[0]!.MediaStreams = []
+      expect(
+        await f.client.inspectPublished(
+          { ...request, size: payload.length },
+          new AbortController().signal,
+        ),
+      ).toMatchObject({ state: 'subtitle-missing' })
+      expect(
+        await f.client.inspectPublished(
+          { ...request, size: payload.length, chinese: false },
+          new AbortController().signal,
+        ),
+      ).toMatchObject({ state: 'confirmed' })
+    } finally {
+      await fs.rm(f.root, { recursive: true, force: true })
+    }
+  })
+  it('只刷新已经发现的新 ID，有限等待后保留不匹配原因', async () => {
+    const f = await fixture()
+    try {
+      const issue = {
+        state: 'size-mismatch' as const,
+        itemId: 'new-id',
+        message: 'Emby 已找到项目，但视频路径或大小尚未与发布结果一致。',
+      }
+      const inspect = vi.spyOn(f.client, 'inspectPublished').mockResolvedValue(issue)
+      const refresh = vi.spyOn(f.client, 'refresh').mockResolvedValue()
+      const deadline = new AbortController()
+      const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal)
+      const wait = vi
+        .spyOn(timers, 'setTimeout')
+        .mockImplementation(async (_ms, _value, options) => {
+          deadline.abort()
+          options!.signal!.throwIfAborted()
+        })
+      const work = f.client.synchronizePublished(
+        { itemId: 'old-id', path: f.item.Path, size: payload.length, chinese: true },
+        new AbortController().signal,
+      )
+      const checked = expect(work).rejects.toThrow('大小尚未')
+      await checked
+      expect(refresh).toHaveBeenCalledWith('new-id', expect.any(Number), expect.any(AbortSignal))
+      expect(timeout).toHaveBeenCalledWith(180000)
+      expect(wait).toHaveBeenCalledWith(3000, undefined, { signal: expect.any(AbortSignal) })
+      expect(inspect).toHaveBeenCalledOnce()
+    } finally {
+      await fs.rm(f.root, { recursive: true, force: true })
+    }
+  })
+  it.each([60, 120])('服务器在 %s 秒后入库仍能完成，不在六秒提前结束', async (seconds) => {
+    const f = await fixture()
+    try {
+      let elapsed = 0
+      vi.spyOn(timers, 'setTimeout').mockImplementation(async (ms, _value, options) => {
+        options!.signal!.throwIfAborted()
+        elapsed += ms!
+      })
+      vi.spyOn(f.client, 'inspectPublished').mockImplementation(async () =>
+        elapsed >= seconds * 1000
+          ? { state: 'confirmed', itemId: 'new-id', message: '已核对。' }
+          : { state: 'not-found', itemId: null, message: '等待入库。' },
+      )
+      const refresh = vi.spyOn(f.client, 'refresh').mockResolvedValue()
+      await expect(
+        f.client.synchronizePublished(
+          { itemId: 'old-id', path: f.item.Path, size: payload.length, chinese: true },
+          new AbortController().signal,
+        ),
+      ).resolves.toBe(true)
+      expect(elapsed).toBe(seconds * 1000)
+      expect(refresh).toHaveBeenCalledOnce()
+    } finally {
+      await fs.rm(f.root, { recursive: true, force: true })
+    }
+  })
+  it('轮询期间取消立即停止，保留已发布结果，不继续请求', async () => {
+    const f = await fixture()
+    const controller = new AbortController()
+    try {
+      const inspect = vi.spyOn(f.client, 'inspectPublished').mockResolvedValue({
+        state: 'not-found',
+        itemId: null,
+        message: '等待入库。',
+      })
+      vi.spyOn(f.client, 'refresh').mockResolvedValue()
+      vi.spyOn(timers, 'setTimeout').mockImplementation(async (_ms, _value, options) => {
+        controller.abort()
+        options!.signal!.throwIfAborted()
+      })
+      await expect(
+        f.client.synchronizePublished(
+          { itemId: 'old-id', path: f.item.Path, size: payload.length, chinese: true },
+          controller.signal,
+        ),
+      ).rejects.toThrow('收尾确认已取消')
+      expect(inspect).toHaveBeenCalledOnce()
+    } finally {
+      await fs.rm(f.root, { recursive: true, force: true })
+    }
+  })
+  it('刷新权限错误不能被吞掉，也不继续轮询', async () => {
+    const f = await fixture()
+    try {
+      const inspect = vi
+        .spyOn(f.client, 'inspectPublished')
+        .mockResolvedValue({ state: 'not-found', itemId: null, message: '未发现新文件。' })
+      vi.spyOn(f.client, 'refresh').mockRejectedValue(new Error('当前 Emby 账号没有此操作权限。'))
+      await expect(
+        f.client.synchronizePublished(
+          { itemId: 'v1', path: f.item.Path, size: payload.length, chinese: true },
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow('权限')
+      expect(inspect).toHaveBeenCalledOnce()
+    } finally {
+      await fs.rm(f.root, { recursive: true, force: true })
+    }
+  })
+  it('旧 ID 刷新返回不存在后，仍允许下一次路径核对确认新 ID', async () => {
+    const f = await fixture()
+    try {
+      f.mode('旧 ID 失效')
+      const replacement = { ...structuredClone(f.item), Id: 'new-id' }
+      f.setCatalog([replacement])
+      vi.spyOn(f.client, 'inspectPublished').mockResolvedValueOnce({
+        state: 'not-found',
+        itemId: null,
+        message: 'Emby 尚未返回新文件路径对应的项目。',
+      })
+      // 初次只读核对通常已完成认证；这里先取得同一连接代次。
+      await f.client.serverIdentity()
+      await expect(
+        f.client.synchronizePublished(
+          { itemId: 'v1', path: replacement.Path, size: payload.length, chinese: true },
+          new AbortController().signal,
+        ),
+      ).resolves.toBe(true)
+      expect(f.calls.filter((call) => call.url.pathname.endsWith('/Refresh'))).toHaveLength(1)
+    } finally {
+      await fs.rm(f.root, { recursive: true, force: true })
+    }
+  })
+  it('同路径多项目停止收尾，不刷新或认领其中任意项目', async () => {
+    const f = await fixture()
+    try {
+      f.setCatalog([f.item, { ...structuredClone(f.item), Id: 'duplicate' }])
+      await expect(
+        f.client.synchronizePublished(
+          { itemId: 'v1', path: f.item.Path, size: payload.length, chinese: true },
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow('多个项目')
+      expect(f.calls.some((call) => call.url.pathname.endsWith('/Refresh'))).toBe(false)
+    } finally {
+      await fs.rm(f.root, { recursive: true, force: true })
+    }
+  })
+  it.each(['取消', '超时'] as const)('确认等待%s时输出中文并停止后续请求', async (reason) => {
+    const f = await fixture()
+    const controller = new AbortController()
+    const deadline = new AbortController()
+    try {
+      vi.spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal)
+      const inspect = vi.spyOn(f.client, 'inspectPublished').mockImplementation(
+        (_request, signal) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('The operation was aborted')), {
+              once: true,
+            })
+          }),
+      )
+      const refresh = vi.spyOn(f.client, 'refresh')
+      const work = f.client.synchronizePublished(
+        { itemId: 'v1', path: f.item.Path, size: payload.length, chinese: true },
+        controller.signal,
+      )
+      const checked = expect(work).rejects.toThrow(
+        reason === '取消' ? '收尾确认已取消' : '超过 3 分钟',
+      )
+      if (reason === '取消') controller.abort()
+      else deadline.abort(new DOMException('timeout', 'TimeoutError'))
+      await checked
+      expect(inspect).toHaveBeenCalledOnce()
+      expect(refresh).not.toHaveBeenCalled()
+    } finally {
+      await fs.rm(f.root, { recursive: true, force: true })
+    }
+  })
+  it('旧项目 ID 失效时按冻结路径发现新 ID，同路径多项目不猜测', async () => {
+    const f = await fixture()
+    try {
+      f.mode('旧 ID 失效')
+      const replacement = structuredClone(f.item)
+      replacement.Id = 'new-id'
+      replacement.Path = '/server/影片/ABC-123-UC.mkv'
+      replacement.MediaSources[0]!.Path = replacement.Path
+      f.setCatalog([replacement])
+      const request = { itemId: 'v1', path: replacement.Path, size: payload.length, chinese: true }
+      expect(await f.client.confirmPublished(request, new AbortController().signal)).toBe(true)
+      f.setCatalog([replacement, { ...replacement, Id: 'ambiguous-id' }])
+      expect(await f.client.confirmPublished(request, new AbortController().signal)).toBe(false)
+    } finally {
+      await fs.rm(f.root, { recursive: true, force: true })
+    }
+  })
+  it('刷新提交后旧路径不能算完成，核对新路径、大小和中文字幕', async () => {
+    const f = await fixture()
+    try {
+      await f.client.refresh('v1')
+      const request = {
+        itemId: 'v1',
+        path: '/server/影片/ABC-123-UC.mkv',
+        size: payload.length,
+        chinese: true,
+      }
+      expect(await f.client.confirmPublished(request, new AbortController().signal)).toBe(false)
+      f.item.Path = request.path
+      f.item.MediaSources[0]!.Path = request.path
+      expect(await f.client.confirmPublished(request, new AbortController().signal)).toBe(true)
+      expect(
+        await f.client.confirmPublished(
+          { ...request, size: payload.length + 1 },
+          new AbortController().signal,
+        ),
+      ).toBe(false)
+      f.item.MediaSources[0]!.MediaStreams = []
+      expect(await f.client.confirmPublished(request, new AbortController().signal)).toBe(false)
+    } finally {
+      await fs.rm(f.root, { recursive: true, force: true })
+    }
+  })
+})
 const waitDownloads = async (service: MediaDownloads) => {
   await vi.waitFor(async () =>
     expect(
@@ -203,6 +497,39 @@ const waitDownloads = async (service: MediaDownloads) => {
 }
 
 describe('媒体库网络契约', () => {
+  it('详情直接入口可按类型和人员查询全部可访问媒体，不错误限定到首个库', async () => {
+    const f = await fixture()
+    for (const filter of [
+      { kind: 'genre', id: '', name: '剧情' },
+      { kind: 'genre', id: 'g1', name: '剧情' },
+      { kind: 'person', id: '12', name: '演员' },
+      { kind: 'person', id: '', name: '演员' },
+    ]) {
+      const request = mediaQuerySchema.parse({
+        ...query,
+        libraryId: undefined,
+        start: 0,
+        favorites: false,
+        filter,
+      })
+      await f.client.page(request)
+      const url = f.calls.at(-1)!.url
+      expect(url.pathname).toBe('/emby/Users/u1/Items')
+      expect(url.searchParams.has('ParentId')).toBe(false)
+      expect(url.searchParams.get('Recursive')).toBe('true')
+      const key =
+        filter.kind === 'genre'
+          ? filter.id
+            ? 'GenreIds'
+            : 'Genres'
+          : filter.id
+            ? 'PersonIds'
+            : 'Person'
+      expect(url.searchParams.get(key)).toBe(filter.id || filter.name)
+    }
+    expect(mediaQuerySchema.safeParse({ ...query, libraryId: '' }).success).toBe(false)
+    expect(mediaQuerySchema.safeParse({ ...query, libraryId: '../其他目录' }).success).toBe(false)
+  })
   it('详情链接使用当前服务器与服务端番号，未配置时拒绝打开 JavBus', async () => {
     const f = await fixture()
     expect(await f.client.externalLink('v1', 'emby')).toBe(
@@ -600,7 +927,7 @@ describe('媒体库下载保护', () => {
 })
 
 describe('媒体库复合任务', () => {
-  async function processFixture() {
+  async function processFixture(withWorkspace = false) {
     const f = await fixture()
     const directory = join(f.settings.paths.nas, '影片')
     await mkdir(directory)
@@ -627,6 +954,14 @@ describe('媒体库复合任务', () => {
       return [video, nfo]
     })
     const lock = new ExecutionLock()
+    const workspace = withWorkspace
+      ? new WorkspaceTasks(join(f.root, 'data'), [], async () => f.settings, tools)
+      : undefined
+    if (workspace) {
+      vi.spyOn(workspace, 'enqueue').mockResolvedValue('11111111-1111-4111-8111-111111111111')
+      vi.spyOn(workspace, 'wait').mockResolvedValue(undefined)
+      vi.spyOn(workspace, 'project').mockReturnValue(null)
+    }
     const service = new MediaProcessService(
       join(f.root, 'data'),
       [],
@@ -635,9 +970,43 @@ describe('媒体库复合任务', () => {
       async () => structuredClone(f.settings),
       lock,
       tools,
+      workspace,
     )
-    return { ...f, directory, original, tools, service, lock }
+    return { ...f, directory, original, tools, service, lock, workspace }
   }
+  it('新任务在处理及发布前将用户记录交给持久化任务上下文', async () => {
+    const f = await processFixture(true)
+    f.service.enqueue({ id: 'v1', kind: 'subtitle', name: '测试影片' })
+    await vi.waitFor(() => expect(f.service.active).toBe(false), { timeout: 10000 })
+    expect(f.workspace!.enqueue).toHaveBeenCalledOnce()
+    const draft = vi.mocked(f.workspace!.enqueue).mock.calls[0]![1]
+    expect(draft.context?.sync?.userData).toMatchObject({
+      itemId: 'v1',
+      data: {
+        IsFavorite: false,
+        PlayCount: 3,
+        Played: true,
+        PlaybackPositionTicks: 0,
+      },
+    })
+    expect(await readFile(f.original)).toEqual(payload)
+    expect(f.tools.subtitle).not.toHaveBeenCalled()
+  })
+  it('用户记录读取失败不启动处理或回写，保留 NAS 原文件和下载结果', async () => {
+    const f = await processFixture(true)
+    vi.spyOn(f.client, 'captureUserData').mockRejectedValue(
+      new Error('Emby 未返回完整的收藏和观看记录。'),
+    )
+    f.service.enqueue({ id: 'v1', kind: 'video', name: '测试影片' })
+    await vi.waitFor(() => expect(f.service.active).toBe(false), { timeout: 10000 })
+    expect(f.workspace!.enqueue).not.toHaveBeenCalled()
+    expect(f.service.snapshot()[0]?.message).toContain('收藏和观看记录')
+    expect(await readFile(f.original)).toEqual(payload)
+    const downloads = await f.downloads.snapshot()
+    expect(downloads[0]?.status).toBe('completed')
+    expect(await readFile(downloads[0]!.path)).toEqual(payload)
+    expect(f.tools.video).not.toHaveBeenCalled()
+  })
   it('先入队再读取详情；同影片不同操作和版本只保留一项，等待中可取消', async () => {
     const f = await processFixture()
     let release!: () => void
@@ -801,6 +1170,26 @@ describe('媒体库复合任务', () => {
   for (const kind of ['subtitle', 'video'] as const)
     it(`${kind === 'subtitle' ? '字幕' : '视频'}链只处理指定媒体，成功后清理旧文件和下载产物，未知文件保留`, async () => {
       const f = await processFixture()
+      const originalOpen = fs.open
+      const originalCopy = fs.copyFile
+      const nasReads: string[] = []
+      vi.spyOn(fs, 'open').mockImplementation(async (path, flags, mode) => {
+        if (
+          inside(f.settings.paths.nas, String(path)) &&
+          (flags === 'r' || String(flags).includes('+'))
+        ) {
+          nasReads.push(String(path))
+          throw new Error('下载后禁止主动回读 NAS 内容。')
+        }
+        return originalOpen(path, flags, mode)
+      })
+      vi.spyOn(fs, 'copyFile').mockImplementation(async (source, target, mode) => {
+        if (inside(f.settings.paths.nas, String(source))) {
+          nasReads.push(String(source))
+          throw new Error('禁止以 NAS 文件为源二次复制。')
+        }
+        return originalCopy(source, target, mode)
+      })
       const plan = await f.service.preview('v1', 's1', kind)
       expect(plan.original).toBe(f.original)
       await f.service.start(plan.id)
@@ -823,14 +1212,16 @@ describe('媒体库复合任务', () => {
         ),
       ).toBe(true)
       expect(f.calls.some((call) => call.url.pathname.endsWith('/Refresh'))).toBe(true)
+      expect(nasReads).toEqual([])
     })
-  it('选错同大小原视频时，内容校验阻止工具执行与回写', async () => {
+  it('预览后原视频被同大小文件修改时，元数据校验阻止处理与回写', async () => {
     const f = await processFixture()
-    await writeFile(f.original, Buffer.alloc(payload.length, 1))
     const plan = await f.service.preview('v1', 's1', 'video')
+    await writeFile(f.original, Buffer.alloc(payload.length, 1))
+    await fs.utimes(f.original, new Date(), new Date(Date.now() + 1000))
     await f.service.start(plan.id)
     await vi.waitFor(() => expect(f.service.active).toBe(false), { timeout: 10000 })
-    expect(f.service.snapshot()[0]?.message).toContain('不一致')
+    expect(f.service.snapshot()[0]?.message).toContain('变化')
     expect(f.tools.video).not.toHaveBeenCalled()
     expect(await readFile(f.original)).toEqual(Buffer.alloc(payload.length, 1))
   })

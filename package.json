@@ -14,7 +14,7 @@
     "dev:web": "vite --config vite.web.config.ts --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:desktop": "npm run build && node scripts/desktop-smoke.mjs && node scripts/desktop-task-queue.mjs && node scripts/desktop-dev-playback.mjs",
+    "test:desktop": "npm run build && node scripts/desktop-smoke.mjs && node scripts/desktop-task-queue.mjs && node scripts/desktop-dev-playback.mjs && node scripts/desktop-shutdown.mjs && node scripts/desktop-theme-startup.mjs",
     "build": "npm run typecheck && electron-vite build",
     "preview": "electron-vite preview",
     "pack": "npm run build && electron-builder --dir",

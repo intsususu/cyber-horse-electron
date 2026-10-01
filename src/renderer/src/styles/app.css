@@ -21,6 +21,11 @@ input,
 select {
   font: inherit;
 }
+input[type='checkbox'],
+input[type='radio'],
+progress {
+  accent-color: var(--accent);
+}
 button {
   cursor: pointer;
   border: 0;
@@ -48,7 +53,7 @@ button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 [tabindex='0']:focus-visible {
-  outline: 2px solid var(--green);
+  outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
 button svg {
@@ -134,14 +139,14 @@ p {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--green);
+  background: var(--accent);
   flex-shrink: 0;
 }
 .tiny-dot {
   background: var(--text-muted);
 }
 .tiny-dot.green {
-  background: var(--green);
+  background: var(--success);
 }
 .nav-label {
   font-size: var(--font-small);
@@ -177,12 +182,12 @@ nav[aria-label='底部导航'] {
   color: var(--text);
 }
 .nav-item.selected {
-  background: var(--selected);
-  color: var(--text);
+  background: var(--nav-selected);
+  color: var(--nav-selected-text);
   font-weight: 650;
 }
 :root[data-theme='eva'] .nav-item.selected {
-  box-shadow: inset 4px 0 var(--green);
+  box-shadow: inset 4px 0 var(--accent);
 }
 .nav-active-dot {
   display: none;
@@ -216,7 +221,7 @@ nav[aria-label='底部导航'] {
   color: var(--text);
 }
 .shutdown-button.counting {
-  color: var(--green);
+  color: var(--accent);
   font-size: var(--font-small);
 }
 .mini-label {
@@ -292,7 +297,7 @@ nav[aria-label='底部导航'] {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--green);
+  background: var(--accent);
 }
 .window-controls {
   display: flex;
@@ -408,6 +413,9 @@ h1 {
 }
 .swatch-dark {
   background: var(--swatch-dark);
+}
+.swatch-ironman {
+  background: var(--swatch-ironman);
 }
 .theme-picker.compact {
   padding: 0;
@@ -658,15 +666,15 @@ h1 {
 }
 .flow-step.active .step-number,
 .flow-step.done .step-number {
-  color: var(--green);
+  color: var(--accent);
   background: var(--accent-soft);
   border-color: var(--accent-border);
 }
 .flow-step.active h3 {
-  color: var(--green);
+  color: var(--accent);
 }
 .running-label {
-  color: var(--green);
+  color: var(--accent);
   font: 13px var(--font-mono);
 }
 .flow-footer {
@@ -756,7 +764,7 @@ h1 {
   white-space: nowrap;
 }
 .tool-state.ready {
-  color: var(--green);
+  color: var(--success);
 }
 .configure-button {
   display: flex;
@@ -897,10 +905,13 @@ h1 {
   background: var(--surface-hover);
   color: var(--text-secondary);
 }
-.task-icon.running,
-.task-icon.succeeded {
+.task-icon.running {
   background: var(--accent-soft);
-  color: var(--green);
+  color: var(--accent);
+}
+.task-icon.succeeded {
+  background: var(--surface-hover);
+  color: var(--success);
 }
 .task-progress {
   height: 5px;
@@ -911,13 +922,13 @@ h1 {
 .task-progress > span {
   display: block;
   height: 100%;
-  background: var(--green);
+  background: var(--accent);
   border-radius: 4px;
   transition: width 0.3s linear;
 }
 .task-progress.indeterminate > span {
   opacity: 0.3;
-  background: repeating-linear-gradient(90deg, var(--green) 0 6px, transparent 6px 12px);
+  background: repeating-linear-gradient(90deg, var(--accent) 0 6px, transparent 6px 12px);
   transition: none;
 }
 .task-status {
@@ -927,9 +938,11 @@ h1 {
   font-size: var(--font-small);
   color: var(--text-secondary);
 }
-.task-status.running,
+.task-status.running {
+  color: var(--accent);
+}
 .task-status.succeeded {
-  color: var(--green);
+  color: var(--success);
 }
 .empty-queue {
   display: flex;
@@ -971,14 +984,7 @@ h1 {
   align-items: center;
   gap: 7px;
 }
-.log-actions select {
-  background: var(--input);
-  color: var(--text-secondary);
-  font-size: var(--font-small);
-  padding: 5px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
+
 .log-lines {
   flex: 1;
   min-height: 0;
@@ -1008,7 +1014,7 @@ h1 {
   color: var(--text-muted);
 }
 .log-level.success {
-  color: var(--green);
+  color: var(--success);
 }
 .log-level.warning {
   color: var(--warning);
@@ -1348,7 +1354,7 @@ h1 {
   font-size: var(--font-body);
 }
 .toast > svg {
-  color: var(--green);
+  color: var(--accent);
   flex-shrink: 0;
 }
 .modal {
@@ -1384,6 +1390,37 @@ h1 {
   background: var(--surface-hover);
   border-radius: 12px;
   margin: 4px auto 18px;
+}
+.shutdown-modes {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: var(--page-gap);
+  font-size: var(--font-body);
+}
+.shutdown-modes legend {
+  margin-bottom: var(--page-gap);
+  color: var(--text-secondary);
+}
+.shutdown-modes label {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--page-gap) / 2);
+  cursor: pointer;
+}
+.shutdown-modes input {
+  accent-color: var(--accent);
+}
+.shutdown-description,
+.shutdown-error {
+  font-size: var(--font-label);
+  line-height: 1.8;
+  margin: var(--page-gap) 0;
+  color: var(--text-secondary);
+}
+.shutdown-error {
+  color: var(--danger);
 }
 .modal-description {
   color: var(--text-secondary);

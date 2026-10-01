@@ -1,11 +1,11 @@
 import { mkdir, statfs } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative } from 'node:path'
 import type { Settings } from '../../shared/contracts'
-import type { PipelineStep } from '../../shared/pipeline'
+import type { PipelineStep, PipelineProgress } from '../../shared/pipeline'
 import type { TaskFile, TaskManifest } from '../../shared/task-workspace'
 import { TaskWorkspaces } from './task-workspaces'
 import { TaskJournal } from './task-journal'
-import { PipelineTools, type CheckedTools } from './pipeline-tools'
+import { PipelineTools, MdcItemFailure, type CheckedTools } from './pipeline-tools'
 import { markedMediaName, taskMediaIdentity } from './media-identity'
 import {
   checkDirectory,
@@ -21,6 +21,7 @@ import {
   unchanged,
 } from './safe-files'
 import { mediaExtensions } from './media-inputs'
+import { TaskScheduler } from './task-scheduler'
 
 type ProcessingStep = 'subtitle-mux' | 'video' | 'scrape'
 const labels: Record<ProcessingStep, string> = {
@@ -31,11 +32,12 @@ const labels: Record<ProcessingStep, string> = {
 const isVideo = (path: string) => mediaExtensions.includes(extname(path).slice(1).toLowerCase())
 const now = () => new Date().toISOString()
 
-/** 新执行器的处理部分；发布及恢复入口未接通前不供桌面任务调用。 */
+/** 任务内逐文件处理；调度、发布与用户确认恢复由统一任务服务组织。 */
 export class TaskProcessing {
   constructor(
     private readonly workspaces: TaskWorkspaces,
     private readonly tools = new PipelineTools(),
+    private readonly scheduler?: TaskScheduler,
   ) {}
 
   async run(
@@ -44,14 +46,21 @@ export class TaskProcessing {
     settings: Settings,
     signal: AbortSignal,
     log: (line: string, warning?: boolean) => void = () => {},
+    resume = false,
+    changed: (task: TaskManifest) => void = () => {},
+    progress: (step: PipelineStep, value: PipelineProgress) => void = () => {},
+    afterFile: (task: TaskManifest, fileId: string) => Promise<void> = async () => {},
   ): Promise<TaskManifest> {
     const journal = await this.workspaces.openJournal(directory, taskId)
     return journal.runExclusive(async () => {
       const initial = await journal.read()
       if (
         initial.snapshotNeedsRepair ||
-        initial.task.state !== 'queued' ||
-        initial.task.files.some((file) => file.sources.some((source) => source.state !== 'pending'))
+        (!resume &&
+          (initial.task.state !== 'queued' ||
+            initial.task.files.some((file) =>
+              file.sources.some((source) => source.state !== 'pending'),
+            )))
       )
         throw new Error('任务不是可首次执行的状态，请通过恢复流程核对后处理。')
       if (
@@ -66,37 +75,114 @@ export class TaskProcessing {
         // 校验全部工具和空间后才接管来源，不能移动文件后才发现不支持目录参数。
         const steps = task.steps.filter((step): step is PipelineStep => step !== 'archive')
         const checked = await this.tools.check(settings, steps, signal, true)
-        await this.preflight(task, directory)
+        if (!resume) await this.preflight(task, directory)
         for (const file of task.files) {
-          for (let index = 0; index < file.sources.length; index++)
-            await this.workspaces.claimSource(directory, task.id, file.id, index, signal)
-          task = (await journal.read()).task
-          let current = task.files.find((entry) => entry.id === file.id)!
-          let video = join(directory, current.sources[0]!.target)
-          let files = current.sources.map((source) => join(directory, source.target))
-          for (const step of steps) {
-            if (!(step in labels)) continue
-            const result = await this.process(
-              journal,
-              current,
-              video,
-              files,
-              step as ProcessingStep,
-              checked,
-              settings,
-              signal,
-              log,
+          try {
+            const latest = await journal.read()
+            if (latest.task.state === 'finalizing') {
+              task = await journal.update(latest.task.revision, { state: 'running' })
+              changed(task)
+            }
+            for (let index = 0; index < file.sources.length; index++)
+              if (file.sources[index]!.state === 'pending')
+                await this.workspaces.claimSource(directory, task.id, file.id, index, signal)
+            task = (await journal.read()).task
+            let current = task.files.find((entry) => entry.id === file.id)!
+            let video = join(directory, current.sources[0]!.target)
+            let files = current.sources.map((source) => join(directory, source.target))
+            for (const step of steps) {
+              if (!(step in labels)) continue
+              const recorded = current.steps.find((entry) => entry.id === step)!
+              if (['verified', 'skipped'].includes(recorded.state)) {
+                video = join(directory, recorded.outputVideo!)
+                files = recorded.outputFiles.map((path) => join(directory, path))
+                continue
+              }
+              if (recorded.inputVideo) {
+                video = join(directory, recorded.inputVideo)
+                const parent = dirname(video)
+                files = current.artifacts
+                  .filter(
+                    (entry) =>
+                      entry.state === 'verified' && dirname(join(directory, entry.path)) === parent,
+                  )
+                  .map((entry) => join(directory, entry.path))
+                files = [video, ...files.filter((path) => path !== video)]
+                if (recorded.inputFiles.length)
+                  files = [
+                    video,
+                    ...recorded.inputFiles
+                      .filter((path) => path !== recorded.inputVideo)
+                      .map((path) => join(directory, path)),
+                  ]
+              }
+              const work = () =>
+                this.process(
+                  journal,
+                  current,
+                  video,
+                  files,
+                  step as ProcessingStep,
+                  checked,
+                  settings,
+                  signal,
+                  log,
+                  changed,
+                  (value) => progress(step, value),
+                )
+              // 字幕与视频处理不设置 GPU 锁，并发由用户决定。
+              const result =
+                this.scheduler && step === 'scrape'
+                  ? await this.scheduler.use('mdc', signal, work, directory)
+                  : await work()
+              current = result.file
+              video = result.video
+              files = result.files
+            }
+            await afterFile((await journal.read()).task, file.id)
+          } catch (error) {
+            if (!(error instanceof MdcItemFailure) || signal.aborted) throw error
+            const latest = await journal.read()
+            const failed = structuredClone(latest.task.files.find((value) => value.id === file.id)!)
+            const step = failed.steps.find((value) => value.id === 'scrape')!
+            const failedRoot = join(
+              directory,
+              failed.directory,
+              labels.scrape + (step.attempt ? `-重试${step.attempt}` : ''),
+              '输出',
             )
-            current = result.file
-            video = result.video
-            files = result.files
+            if (await exists(failedRoot))
+              for (const path of await listFiles(failedRoot, signal, false)) {
+                const rel = relative(directory, path).replace(/\\/g, '/')
+                if (!failed.artifacts.some((value) => value.path === rel))
+                  failed.artifacts.push({
+                    path: rel,
+                    role: 'temporary',
+                    state: 'reserved',
+                    stamp: await fileStamp(path),
+                    sha256: await hashFile(path, signal),
+                  })
+              }
+            Object.assign(step, { state: 'failed', endedAt: now(), message: error.message })
+            task = await journal.update(latest.task.revision, {
+              files: [failed],
+              message: `单文件刮削失败，其他文件继续：${error.message}`,
+            })
+            changed(task)
+            log(task.message, true)
           }
         }
         task = (await journal.read()).task
         checkpoint(signal)
+        if (task.files.every((file) => file.steps.some((step) => step.state === 'failed')))
+          throw new MdcItemFailure(
+            task.files[0]!.steps.find((step) => step.state === 'failed')!.message,
+          )
         return journal.update(task.revision, {
           state: 'finalizing',
-          message: '所选媒体处理步骤已校验，等待发布与收尾。',
+          message: task.files.some((file) => file.steps.some((step) => step.state === 'failed'))
+            ? '部分文件失败；成功文件已校验，等待发布与收尾。'
+            : '所选媒体处理步骤已校验，等待发布与收尾。',
         })
       } catch (error) {
         // 写入失败或快照不一致时不继续清理；恢复服务会依据最后已落盘事件核对。
@@ -162,6 +248,8 @@ export class TaskProcessing {
     settings: Settings,
     signal: AbortSignal,
     log: (line: string, warning?: boolean) => void,
+    changed: (task: TaskManifest) => void,
+    report: (value: PipelineProgress) => void,
   ): Promise<{ file: TaskFile; video: string; files: string[] }> {
     checkpoint(signal)
     const file = structuredClone(original)
@@ -176,6 +264,7 @@ export class TaskProcessing {
       const latest = await journal.read()
       if (latest.snapshotNeedsRepair) throw new Error('任务记录需要确认修复，未继续执行。')
       const task = await journal.update(latest.task.revision, { files: [file], message })
+      changed(task)
       // 持久化解析可能补齐默认字段，但保持当前步骤引用不变。
       return task
     }
@@ -185,6 +274,9 @@ export class TaskProcessing {
         if (!artifact || artifact.state !== 'verified' || !artifact.stamp)
           throw new Error('步骤输入没有有效的归属和校验记录。')
         await unchanged(path, artifact.stamp)
+        const hash = await hashFile(path, signal)
+        if (artifact.sha256 && artifact.sha256 !== hash) throw new Error('步骤输入摘要发生变化。')
+        artifact.sha256 = hash
       }
     }
     const relocate = async (source: string, target: string, role: 'input' | 'output') => {
@@ -192,7 +284,15 @@ export class TaskProcessing {
       if (!old?.stamp || old.state !== 'verified') throw new Error('移交输入缺少校验记录。')
       if (file.artifacts.some((entry) => entry.path === rel(target)) || (await exists(target)))
         throw new Error('步骤目标存在冲突，未覆盖文件。')
-      file.artifacts.push({ path: rel(target), role, state: 'reserved', stamp: null, sha256: null })
+      file.artifacts.push({
+        path: rel(target),
+        role,
+        state: 'reserved',
+        stamp: null,
+        sha256: old.sha256,
+      })
+      step.inputFiles = step.inputFiles.map((path) => (path === rel(source) ? rel(target) : path))
+      if (step.inputVideo === rel(source)) step.inputVideo = rel(target)
       await save('文件移交目标已登记。')
       await unchanged(source, old.stamp)
       await moveChecked(source, target, signal)
@@ -205,6 +305,7 @@ export class TaskProcessing {
     }
     await verifyInputs()
     step.inputVideo = rel(video)
+    step.inputFiles = files.map(rel)
     step.startedAt = now()
     if ((id === 'subtitle-mux' && identity.chinese) || (id === 'video' && identity.restored)) {
       step.state = 'skipped'
@@ -218,7 +319,11 @@ export class TaskProcessing {
     step.state = 'running'
     step.message = '已登记步骤，等待工具处理。'
     await save(step.message)
-    const base = join(journal.directory, file.directory, labels[id])
+    const base = join(
+      journal.directory,
+      file.directory,
+      labels[id] + (step.attempt ? `-重试${step.attempt}` : ''),
+    )
     await checkDirectory(dirname(base))
     await mkdir(base) // 独占创建，恢复场景不能直接重新调用。
     const outputRoot = join(base, '输出')
@@ -316,8 +421,9 @@ export class TaskProcessing {
           settings.subtitle.format,
           signal,
           log,
-          undefined,
+          report,
           subtitles,
+          settings.subtitle,
         )
         for (const path of planned) {
           const record = file.artifacts.find((entry) => entry.path === rel(path))!
@@ -338,7 +444,7 @@ export class TaskProcessing {
           sha256: null,
         })
         await save('视频处理临时位置已登记。')
-        await this.tools.video(tools, video, outputVideo, signal, log, undefined, {
+        await this.tools.video(tools, video, outputVideo, signal, log, report, {
           restored,
           workingDirectory: scratch,
         })

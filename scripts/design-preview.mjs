@@ -1,3 +1,4 @@
+import { closeDesktop } from './fixtures/close-desktop.mjs'
 import { _electron as electron, expect } from '@playwright/test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
@@ -77,5 +78,5 @@ try {
   keepOpen = process.argv.includes('--keep-open')
   if (keepOpen) await new Promise((resolve) => app.once('close', resolve))
 } finally {
-  if (!keepOpen) await app.close()
+  if (!keepOpen) await closeDesktop(app)
 }

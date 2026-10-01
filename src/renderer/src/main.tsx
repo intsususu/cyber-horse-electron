@@ -15,6 +15,8 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean
   }
   componentDidCatch(_error: Error, _info: ErrorInfo) {
     /* 不记录可能包含用户路径的完整错误。 */
+    // 即使业务界面出错，也显示恢复界面，避免窗口一直隐藏。
+    void window.cyberHorse?.windowReady?.().catch(() => {})
   }
   render() {
     if (this.state.failed)

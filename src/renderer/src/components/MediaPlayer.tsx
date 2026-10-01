@@ -34,10 +34,7 @@ export function MediaPlayer({
   const [subtitleIndex, setSubtitleIndex] = useState<number | null | undefined>(undefined)
   const [subtitleError, setSubtitleError] = useState('')
   const [subtitleText, setSubtitleText] = useState('')
-  const [subtitleLoaded, setSubtitleLoaded] = useState(false)
-  const [firstSubtitleAt, setFirstSubtitleAt] = useState<number | null>(null)
   const [subtitleAttempt, setSubtitleAttempt] = useState(0)
-  const [subtitleRetrying, setSubtitleRetrying] = useState(false)
   const keyboardNavigation = useRef(false)
   const video = useRef<HTMLVideoElement>(null)
   const subtitleTrack = useRef<HTMLTrackElement>(null)
@@ -79,10 +76,7 @@ export function MediaPlayer({
     setSession(null)
     setSubtitleText('')
     setSubtitleError('')
-    setSubtitleLoaded(false)
-    setFirstSubtitleAt(null)
     setSubtitleAttempt(0)
-    setSubtitleRetrying(false)
     void window.cyberHorse
       ?.openMediaPlayback({ id: detail.id, sourceId, startSeconds: offset, transcode })
       .then((value) => {
@@ -180,14 +174,6 @@ export function MediaPlayer({
 
   const updateSubtitle = () => {
     const element = subtitleTrack.current
-    if (element?.readyState === 2 && !subtitleLoaded) {
-      let first = Infinity
-      for (const cue of Array.from(element.track.cues ?? [])) first = Math.min(first, cue.startTime)
-      setFirstSubtitleAt(Number.isFinite(first) ? first : null)
-      setSubtitleLoaded(true)
-      setSubtitleError('')
-      setSubtitleRetrying(false)
-    }
     const cues = element?.track.activeCues
     setSubtitleText(
       Array.from(cues ?? [])
@@ -213,9 +199,6 @@ export function MediaPlayer({
   const retrySubtitle = () => {
     setSubtitleError('')
     setSubtitleText('')
-    setSubtitleLoaded(false)
-    setFirstSubtitleAt(null)
-    setSubtitleRetrying(false)
     setSubtitleAttempt((current) => current + 1)
   }
 
@@ -226,6 +209,7 @@ export function MediaPlayer({
     const loaded = () => {
       if (element.readyState !== 2) return
       if (retryTimer !== undefined) window.clearTimeout(retryTimer)
+      setSubtitleError('')
       updateSubtitle()
     }
     const failed = () => {
@@ -235,16 +219,14 @@ export function MediaPlayer({
       }
       if (element.readyState !== 3) return
       if (subtitleAttempt === 0) {
-        setSubtitleRetrying(true)
         retryTimer = window.setTimeout(retrySubtitle, 500)
         return
       }
-      setSubtitleLoaded(false)
-      setSubtitleRetrying(false)
       setSubtitleError(`所选字幕加载失败（诊断编号 ${session?.diagnosticId}）。`)
     }
     element.addEventListener('load', loaded)
     element.addEventListener('error', failed)
+    element.track.addEventListener('cuechange', updateSubtitle)
     element.track.mode = 'hidden'
     if (element.readyState === 2) loaded()
     else if (element.readyState === 3) failed()
@@ -252,6 +234,7 @@ export function MediaPlayer({
       if (retryTimer !== undefined) window.clearTimeout(retryTimer)
       element.removeEventListener('load', loaded)
       element.removeEventListener('error', failed)
+      element.track.removeEventListener('cuechange', updateSubtitle)
     }
   }, [session?.token, selectedSubtitle?.index, subtitleAttempt])
 
@@ -452,17 +435,9 @@ export function MediaPlayer({
           }}
           subtitles={subtitles}
           subtitleIndex={selectedSubtitle?.index ?? null}
-          subtitleLoaded={subtitleLoaded}
-          subtitleRetrying={subtitleRetrying}
-          firstSubtitleAt={firstSubtitleAt}
-          subtitleError={subtitleError}
-          subtitleRestartRequired={subtitleRestartRequired}
           onSubtitle={(index) => {
             setSubtitleError('')
             setSubtitleText('')
-            setSubtitleLoaded(false)
-            setFirstSubtitleAt(null)
-            setSubtitleRetrying(false)
             setSubtitleAttempt(0)
             setSubtitleIndex(index)
           }}

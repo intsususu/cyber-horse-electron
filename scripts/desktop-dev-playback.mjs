@@ -1,3 +1,4 @@
+import { closeDesktop } from './fixtures/close-desktop.mjs'
 import { _electron as electron, expect } from '@playwright/test'
 import { createServer } from 'vite'
 import { mkdir, mkdtemp } from 'node:fs/promises'
@@ -150,6 +151,6 @@ try {
   console.log('开发模式播放验证通过：跨域视频解码、字幕加载与开关、可信来源限制。')
   console.log('旧后台兼容验证通过：视频继续播放，字幕明确提示重启，不误报解码失败。')
 } finally {
-  if (app) await app.close()
+  if (app) await closeDesktop(app)
   await server.close()
 }

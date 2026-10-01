@@ -42,6 +42,7 @@ import {
   type FileStamp,
 } from './safe-files'
 import { redactToolLine } from './tool-process'
+import { WorkspaceTasks } from './workspace-tasks'
 
 type MediaItem = { video: string; root: string; files: string[] }
 type Plan = {
@@ -85,24 +86,29 @@ export class PipelineService {
   private controller: AbortController | null = null
   private work: Promise<void> | null = null
   private busy = false
+  private workspaceId: string | null = null
   constructor(
     private readonly dataDirectory: string,
     private readonly protectedPaths: string[],
     private readonly tools = new PipelineTools(),
     private readonly lock = new ExecutionLock(),
     private readonly returnScrapeToPreprocess = true,
+    private readonly workspaceTasks?: WorkspaceTasks,
   ) {}
   get active(): boolean {
-    return this.busy
+    return this.busy || !!(this.workspaceId && this.workspaceTasks?.isActive(this.workspaceId))
   }
   snapshot(): PipelineState | null {
+    if (this.workspaceId) return this.workspaceTasks?.project(this.workspaceId) ?? null
     return this.state ? structuredClone(this.state) : null
   }
   async wait(): Promise<void> {
+    if (this.workspaceId) await this.workspaceTasks?.wait(this.workspaceId)
     while (this.busy) await new Promise((resolve) => setTimeout(resolve, 25))
     await this.work
   }
   cancel(): void {
+    if (this.workspaceId) this.workspaceTasks?.cancel(this.workspaceId)
     this.controller?.abort()
     if (this.state?.status === 'running')
       this.state = { ...this.state, status: 'cancelling', message: '正在停止工具，已完成操作保留…' }
@@ -113,7 +119,8 @@ export class PipelineService {
     request: PipelineRequest,
     source: string,
   ): Promise<PipelinePlan> {
-    const release = this.lock.acquire('处理任务')
+    if (this.busy || this.active) throw new Error('工作台已有任务正在运行或预览。')
+    const release = this.workspaceTasks ? () => {} : this.lock.acquire('处理任务')
     this.busy = true
     this.plan = null
     this.controller = new AbortController()
@@ -161,6 +168,7 @@ export class PipelineService {
         archive: 'nas',
       } as const
       for (const step of steps) {
+        if (this.workspaceTasks && step !== 'archive') continue
         roots[step] = await safeRoot(settings.paths[mapping[step]], [
           this.dataDirectory,
           ...this.protectedPaths,
@@ -180,7 +188,7 @@ export class PipelineService {
           : undefined
       if (
         scrapeReturnRoot &&
-        (overlap(scrapeReturnRoot, roots.scrape!) ||
+        ((roots.scrape && overlap(scrapeReturnRoot, roots.scrape)) ||
           (roots.archive && overlap(scrapeReturnRoot, roots.archive)))
       )
         throw new Error('预处理目录不能与 MDC 输出目录或 NAS 目录相同或互相包含。')
@@ -222,7 +230,9 @@ export class PipelineService {
         }
         items.push({ video: file.path, root: parent, files: paths })
       }
-      const checked = await this.tools.check(settings, steps, signal)
+      if (this.workspaceTasks)
+        await safeRoot(settings.paths.download, [this.dataDirectory, ...this.protectedPaths])
+      const checked = await this.tools.check(settings, steps, signal, !!this.workspaceTasks)
       const view: PipelinePlan = {
         id: randomUUID(),
         createdAt: Date.now(),
@@ -233,8 +243,11 @@ export class PipelineService {
         relatedFiles: items.map((item) => ({ video: item.video, files: item.files })),
         destinations: steps.map((step) => ({
           step,
-          directory:
-            step === 'scrape' && scrapeReturnRoot
+          directory: this.workspaceTasks
+            ? steps.includes('archive')
+              ? roots.archive!
+              : settings.paths.preprocess
+            : step === 'scrape' && scrapeReturnRoot
               ? scrapeReturnRoot
               : step === 'subtitle-mux' || step === 'video'
                 ? root
@@ -251,24 +264,30 @@ export class PipelineService {
                   ? 'ffprobe（视频校验）'
                   : 'Jasna',
         ),
-        warnings: [
-          '直接处理清单内的视频及相关文件。新产物校验成功后删除被替换的旧文件，不保留恢复副本。',
-          ...(steps.includes('scrape')
-            ? [
-                scrapeReturnRoot
-                  ? 'MDC 按单文件写入配置的输出目录；产物校验通过后，将本次媒体文件夹搬回预处理目录。失败时请核对源目录、MDC 输出目录和预处理目录。'
-                  : 'MDC 按单文件调用，直接写入配置的输出目录，并按自身配置移动或整理所选视频；失败时请核对源目录与输出目录。',
-              ]
-            : []),
-          ...(steps.includes('archive')
-            ? [
-                'NAS 归档按识别到的番号命名目标文件夹，-C、-U、-UC 指向同一番号目录；同名番号目录先改名为 _tmp，新目录复制并校验后删除 _tmp。演员目录及其他番号目录保留。整批目标文件大小与本地一致后，直接删除对应本地文件。',
-              ]
-            : []),
-          ...(steps.includes('archive') && !steps.includes('scrape')
-            ? ['本次没有选择刮削，只归档当前视频及已有的相关文件，不补跑 MDC。']
-            : []),
-        ],
+        warnings: this.workspaceTasks
+          ? [
+              '输入将接管到已保存下载目录下的独立 .work 任务目录，所有工具在任务内读写媒体。',
+              '校验后发布到预处理目录或 NAS；重名目标停止处理，不覆盖未知文件。',
+              '新产物校验后淘汰被替换输入，不保留整套恢复副本；失败或取消保留最近有效文件，重启后由你确认恢复。',
+            ]
+          : [
+              '直接处理清单内的视频及相关文件。新产物校验成功后删除被替换的旧文件，不保留恢复副本。',
+              ...(steps.includes('scrape')
+                ? [
+                    scrapeReturnRoot
+                      ? 'MDC 按单文件写入配置的输出目录；产物校验通过后，将本次媒体文件夹搬回预处理目录。失败时请核对源目录、MDC 输出目录和预处理目录。'
+                      : 'MDC 按单文件调用，直接写入配置的输出目录，并按自身配置移动或整理所选视频；失败时请核对源目录与输出目录。',
+                  ]
+                : []),
+              ...(steps.includes('archive')
+                ? [
+                    'NAS 归档按识别到的番号命名目标文件夹，-C、-U、-UC 指向同一番号目录；同名番号目录先改名为 _tmp，新目录复制并校验后删除 _tmp。演员目录及其他番号目录保留。整批目标文件大小与本地一致后，直接删除对应本地文件。',
+                  ]
+                : []),
+              ...(steps.includes('archive') && !steps.includes('scrape')
+                ? ['本次没有选择刮削，只归档当前视频及已有的相关文件，不补跑 MDC。']
+                : []),
+            ],
       }
       this.plan = {
         public: view,
@@ -290,7 +309,8 @@ export class PipelineService {
   }
 
   async start(id: string, settings: Settings, source: string): Promise<PipelineState> {
-    const release = this.lock.acquire('处理任务')
+    if (this.busy || this.active) throw new Error('工作台已有任务正在运行或预览。')
+    const release = this.workspaceTasks ? () => {} : this.lock.acquire('处理任务')
     this.busy = true
     const plan = this.plan
     this.plan = null
@@ -309,6 +329,30 @@ export class PipelineService {
         await unchanged(path, stamp)
       }
       for (const tool of Object.values(plan.tools)) await verifyCheckedTool(tool)
+      if (this.workspaceTasks) {
+        this.workspaceId = await this.workspaceTasks.enqueue(
+          settings,
+          {
+            origin: 'workbench',
+            steps: plan.public.steps,
+            destination: {
+              kind: plan.public.steps.includes('archive') ? 'nas' : 'preprocess',
+              root: plan.public.steps.includes('archive')
+                ? settings.paths.nas
+                : settings.paths.preprocess,
+            },
+            files: plan.items.map((item) => ({
+              path: item.video,
+              companions: item.files.filter((path) => path !== item.video),
+            })),
+          },
+          [plan.public.source],
+        )
+        this.busy = false
+        this.controller = null
+        release()
+        return this.snapshot()!
+      }
       const journal = join(this.dataDirectory, 'pipeline', `${id}.jsonl`)
       await mkdir(dirname(journal), { recursive: true })
       const file = await open(journal, 'wx')
@@ -789,6 +833,8 @@ export class PipelineService {
                     signal,
                     log,
                     report,
+                    undefined,
+                    settings.subtitle,
                   )
                   if (!item.files.includes(subtitle)) transient.add(subtitle)
                   if (!hadSrt) transient.add(srt)

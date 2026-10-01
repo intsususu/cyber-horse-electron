@@ -1,16 +1,15 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import {
   ArrowRight,
   Boxes,
   Check,
   CircleHelp,
+  ChartNoAxesColumnIncreasing,
   LayoutGrid,
   ListVideo,
   Maximize2,
   Minus,
-  Power,
   Settings2,
-  Timer,
   X,
 } from 'lucide-react'
 import type { Page } from './data/catalog'
@@ -21,27 +20,28 @@ import { HorseMark } from './components/HorseMark'
 import { Modal } from './components/Modal'
 import { WorkspaceContent } from './components/WorkspaceContent'
 import { ThemePicker } from './components/ThemePicker'
+import { ShutdownControl } from './components/ShutdownControl'
 import type { PathKey } from '../../shared/contracts'
 
 const navigation = [
   { id: 'overview', icon: LayoutGrid, label: '工作台' },
   { id: 'library', icon: Boxes, label: 'EMBY媒体库' },
+  { id: 'popular', icon: ChartNoAxesColumnIncreasing, label: '热门推荐' },
 ] as const
 export default function App() {
   const workspace = useWorkspace()
   const activeMediaTasks = useMediaQueueSummary()
-  const activeWorkbenchTasks = workspace.run.tasks.filter((task) =>
-    ['pending', 'running'].includes(task.status),
+  const activeWorkbenchTasks = workspace.run.tasks.filter(
+    (task) =>
+      ['pending', 'running'].includes(task.status) &&
+      (!activeMediaTasks.unified || !workspace.run.pipeline || task.id === 'prepare'),
   ).length
   const activeQueueTasks =
-    activeMediaTasks === null ? null : activeWorkbenchTasks + activeMediaTasks
+    activeMediaTasks.active === null ? null : activeWorkbenchTasks + activeMediaTasks.active
   const [page, setPage] = useState<Page>('overview')
   const [libraryVisit, setLibraryVisit] = useState(0)
   const [settingsTarget, setSettingsTarget] = useState<PathKey>()
-  const [modal, setModal] = useState<'shutdown' | 'about' | null>(null)
-  const [shutdownMinutes, setShutdownMinutes] = useState(30)
-  const [shutdownAt, setShutdownAt] = useState<number | null>(null)
-  const [remaining, setRemaining] = useState(0)
+  const [modal, setModal] = useState<'about' | null>(null)
   const navigate = (next: Page, path?: PathKey) => {
     if (next === 'library') setLibraryVisit((visit) => visit + 1)
     setSettingsTarget(path)
@@ -49,21 +49,6 @@ export default function App() {
     setModal(null)
     document.querySelector('.main-scroll')?.scrollTo({ top: 0 })
   }
-  useEffect(() => {
-    if (!shutdownAt) return
-    const refresh = () => {
-      const seconds = Math.max(0, Math.ceil((shutdownAt - Date.now()) / 1000))
-      setRemaining(seconds)
-      if (seconds === 0) {
-        setShutdownAt(null)
-        workspace.setToast('倒计时演示结束，未执行系统关机。')
-        workspace.addLog('关机倒计时演示结束，未执行系统关机。')
-      }
-    }
-    refresh()
-    const interval = window.setInterval(refresh, 1000)
-    return () => window.clearInterval(interval)
-  }, [shutdownAt, workspace.addLog, workspace.setToast])
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -124,26 +109,7 @@ export default function App() {
           </button>
         </nav>
         <div className="sidebar-bottom">
-          <button
-            className={`shutdown-button ${shutdownAt ? 'counting' : ''}`}
-            aria-label={shutdownAt ? '取消倒计时' : '定时关机'}
-            onClick={() => {
-              if (shutdownAt) {
-                setShutdownAt(null)
-                workspace.setToast('已取消倒计时演示。')
-              } else setModal('shutdown')
-            }}
-          >
-            <Power size={16} />
-            <span>
-              {shutdownAt
-                ? `取消倒计时 ${Math.floor(remaining / 60)
-                    .toString()
-                    .padStart(2, '0')}:${(remaining % 60).toString().padStart(2, '0')}`
-                : '定时关机'}
-            </span>
-            {!shutdownAt && <span className="mini-label">演示</span>}
-          </button>
+          <ShutdownControl setToast={workspace.setToast} addLog={workspace.addLog} />
           <ThemePicker
             compact
             value={workspace.settings.theme}
@@ -213,53 +179,6 @@ export default function App() {
           </button>
         </div>
       )}
-      {modal === 'shutdown' && (
-        <Modal title="定时关机演示" onClose={() => setModal(null)}>
-          <div className="shutdown-modal-icon">
-            <Timer size={30} />
-          </div>
-          <p className="modal-description">预览倒计时交互。此版本不会执行系统关机。</p>
-          <label className="minutes-field">
-            倒计时时长
-            <span>
-              <input
-                type="number"
-                min="1"
-                max="720"
-                value={shutdownMinutes}
-                onChange={(event) => setShutdownMinutes(Number(event.target.value))}
-              />
-              分钟
-            </span>
-          </label>
-          <div className="duration-options">
-            {[15, 30, 60, 120].map((minutes) => (
-              <button
-                className={shutdownMinutes === minutes ? 'selected' : ''}
-                key={minutes}
-                onClick={() => setShutdownMinutes(minutes)}
-              >
-                {minutes} 分钟
-              </button>
-            ))}
-          </div>
-          <button
-            className="primary-button modal-primary"
-            disabled={
-              !Number.isInteger(shutdownMinutes) || shutdownMinutes < 1 || shutdownMinutes > 720
-            }
-            onClick={() => {
-              setShutdownAt(Date.now() + shutdownMinutes * 60_000)
-              setRemaining(shutdownMinutes * 60)
-              setModal(null)
-              workspace.addLog(`已开启 ${shutdownMinutes} 分钟关机倒计时演示。`)
-            }}
-          >
-            <Timer size={16} />
-            开始倒计时演示
-          </button>
-        </Modal>
-      )}
       {modal === 'about' && (
         <Modal title="关于 Cyber Horse" onClose={() => setModal(null)}>
           <div className="about-brand">
@@ -274,7 +193,7 @@ export default function App() {
             NAS 归档。
           </p>
           <div className="info-strip">
-            工作台处理前会预览任务；外部模型和在线服务仍需实机验收。定时关机仅提供倒计时演示。
+            工作台处理前会预览任务；外部模型和在线服务仍需实机验收。定时关机支持按时间或所有任务结束后触发。
           </div>
           <button
             className="secondary-button modal-primary"

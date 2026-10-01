@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Download, Heart, Subtitles, Trash2, WandSparkles } from 'lucide-react'
 import type { LibraryVideo, MediaDetail } from '../../../shared/media-library'
+import { Select } from './Select'
 
 export type MediaContextState = {
   item: LibraryVideo
@@ -104,19 +105,16 @@ export function MediaContextMenu({
       {menu.detail && menu.detail.sources.length > 1 && (
         <label className="media-context-source">
           媒体版本
-          <select
-            aria-label="快捷操作使用的媒体版本"
+          <Select
+            label="快捷操作使用的媒体版本"
             value={menu.sourceId}
             disabled={disabled || processing}
-            onChange={(event) => onSourceChange(event.target.value)}
-          >
-            {menu.detail.sources.map((item, index) => (
-              <option key={item.id} value={item.id}>
-                版本 {index + 1}
-                {item.size === null ? '' : ` · ${(item.size / 1024 ** 3).toFixed(2)} GiB`}
-              </option>
-            ))}
-          </select>
+            onChange={onSourceChange}
+            options={menu.detail.sources.map((item, index) => ({
+              value: item.id,
+              label: `版本 ${index + 1}${item.size === null ? '' : ` · ${(item.size / 1024 ** 3).toFixed(2)} GiB`}`,
+            }))}
+          />
         </label>
       )}
       <div className="media-context-actions">

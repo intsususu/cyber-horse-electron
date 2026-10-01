@@ -121,6 +121,9 @@ export class MediaDownloads {
   get running() {
     return this.active.size > 0 || this.starting.size > 0
   }
+  get failedTaskIds() {
+    return this.jobs.filter((job) => job.status === 'failed').map((job) => job.id)
+  }
   cancel(id: string) {
     const active = this.active.get(id)
     if (!active) return

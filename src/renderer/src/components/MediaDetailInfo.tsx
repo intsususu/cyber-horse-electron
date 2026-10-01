@@ -16,6 +16,7 @@ import type {
   MediaSource,
 } from '../../../shared/media-library'
 import { mediaCatalogNumber } from '../../../shared/media-links'
+import { Select } from './Select'
 
 export function MediaDetailInfo({
   detail,
@@ -134,18 +135,16 @@ export function MediaDetailInfo({
             {detail.sources.length > 1 && source && (
               <label className="media-source-picker">
                 选择版本
-                <select
-                  aria-label="选择媒体版本"
+                <Select
+                  label="选择媒体版本"
                   value={source.id}
                   disabled={processing || disabled}
-                  onChange={(event) => onSourceChange(event.target.value)}
-                >
-                  {detail.sources.map((item, index) => (
-                    <option key={item.id} value={item.id}>
-                      版本 {index + 1} · {formatSize(item)}
-                    </option>
-                  ))}
-                </select>
+                  onChange={onSourceChange}
+                  options={detail.sources.map((item, index) => ({
+                    value: item.id,
+                    label: `版本 ${index + 1} · ${formatSize(item)}`,
+                  }))}
+                />
               </label>
             )}
             {source && (

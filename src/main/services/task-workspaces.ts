@@ -10,8 +10,10 @@ import {
 import { isInternalMediaPath, taskWorkDirectoryName } from '../../shared/media-files'
 import {
   checkDirectory,
+  copyChecked,
   checkpoint,
   fileStamp,
+  hashFile,
   inside,
   moveChecked,
   pathKey,
@@ -26,7 +28,8 @@ export type WorkspaceDraft = {
   origin: TaskManifest['origin']
   steps: TaskManifest['steps']
   destination: TaskManifest['destination']
-  files: { path: string; companions?: string[] }[]
+  files: { path: string; companions?: string[]; companionBase?: string }[]
+  context?: TaskManifest['context']
 }
 export type WorkspaceDiscovery =
   | { kind: 'task'; directory: string; task: TaskManifest; snapshotNeedsRepair: boolean }
@@ -47,7 +50,7 @@ function dateName(date: Date): string {
   )
 }
 
-/** 目前供新执行器接入与隔离测试使用；不会在启动或读取配置时创建媒体目录。 */
+/** 为桌面任务登记独立工作目录；启动发现和读取配置不会接管媒体或启动处理。 */
 export class TaskWorkspaces {
   private static pending = new Map<string, Promise<unknown>>()
 
@@ -105,6 +108,21 @@ export class TaskWorkspaces {
       const downloadRoot = await this.root(savedDownloadRoot)
       const allowed = await Promise.all(savedSourceRoots.map((path) => this.root(path)))
       const destination = { ...draft.destination, root: await this.root(draft.destination.root) }
+      const context = draft.context ? structuredClone(draft.context) : null
+      if (context)
+        for (const replacement of context.replacements) {
+          const parent = await checkDirectory(dirname(replacement.path))
+          if (
+            pathKey(parent) !== pathKey(destination.root) ||
+            !allowed.some(
+              (root) =>
+                inside(root, replacement.path) ||
+                inside(root, join(parent, basename(replacement.path))),
+            )
+          )
+            throw new Error('原媒体清单不属于已保存的影片目录。')
+          replacement.path = join(parent, basename(replacement.path))
+        }
       const id = randomUUID()
       const now = new Date()
       const files: TaskFile[] = []
@@ -123,14 +141,23 @@ export class TaskWorkspaces {
         const sources: TaskFile['sources'] = []
         for (const path of [source, ...(entry.companions ?? [])]) {
           const parent = await checkDirectory(dirname(path))
-          if (pathKey(parent) !== pathKey(dirname(source)))
+          const companionBase = entry.companionBase ?? source
+          const copiedCompanion = path !== source && !!entry.companionBase
+          if (
+            (!copiedCompanion && pathKey(parent) !== pathKey(dirname(source))) ||
+            (copiedCompanion &&
+              (pathKey(parent) !== pathKey(dirname(companionBase)) ||
+                !allowed.some((root) => inside(root, path))))
+          )
             throw new Error('关联文件必须位于所选视频的同一目录。')
           const stamp = await fileStamp(path)
           if (!stamp.size) throw new Error('任务输入包含空文件，未接管来源。')
           const filename = basename(path)
-          const suffix = filename.slice(originalStem.length)
+          const companionStem =
+            path === source ? originalStem : basename(companionBase, extname(companionBase))
+          const suffix = filename.slice(companionStem.length)
           const companion =
-            filename.toLowerCase().startsWith(originalStem.toLowerCase()) &&
+            filename.toLowerCase().startsWith(companionStem.toLowerCase()) &&
             /^(?:\.|-(?:poster|thumb|fanart)\.)/i.test(suffix)
           if (path !== source && !companion && !/^(?:poster|thumb|fanart)\./i.test(filename))
             throw new Error('关联文件不属于所选视频，未接管来源。')
@@ -139,6 +166,7 @@ export class TaskWorkspaces {
             stamp,
             target: `${directory}/输入/${companion ? stem + suffix : filename}`,
             state: 'pending',
+            copy: copiedCompanion,
           })
         }
         const mark = (present: boolean) => ({
@@ -162,10 +190,13 @@ export class TaskWorkspaces {
             endedAt: null,
             message: '',
             inputVideo: null,
+            inputFiles: [],
             outputVideo: null,
             outputFiles: [],
+            attempt: 0,
           })),
           artifacts: [],
+          publications: [],
         })
       }
       const name = displayName(files)
@@ -185,6 +216,7 @@ export class TaskWorkspaces {
         steps: draft.steps,
         files,
         message: '等待执行；来源文件尚未移动。',
+        context,
       })
       const root = join(downloadRoot, taskWorkDirectoryName)
       const directory = join(root, workspaceName)
@@ -237,7 +269,8 @@ export class TaskWorkspaces {
         role: 'input',
         state: 'reserved',
         stamp: null,
-        sha256: null,
+        // 远端旁车属于明确下载，只读一次；摘要在下载后的本地文件上计算。
+        sha256: source.copy ? null : await hashFile(source.path, signal),
       })
       const prepared = await journal.update(current.task.revision, {
         state: 'running',
@@ -256,12 +289,14 @@ export class TaskWorkspaces {
       }
       checkpoint(signal)
       await unchanged(source.path, source.stamp)
-      await moveChecked(source.path, target, signal)
+      if (source.copy) await copyChecked(source.path, target, signal)
+      else await moveChecked(source.path, target, signal)
       const stamp = await fileStamp(target)
       nextFile.sources[sourceIndex]!.state = 'claimed'
       const artifact = nextFile.artifacts.find((entry) => entry.path === source.target)!
       artifact.state = 'verified'
       artifact.stamp = stamp
+      if (source.copy) artifact.sha256 = await hashFile(target, signal)
       return journal.update(prepared.revision, {
         files: [nextFile],
         message: '任务输入已接管并核对。',
@@ -299,6 +334,7 @@ export class TaskWorkspaces {
         await checkDirectory(root)
         let count = 0
         for await (const entry of await opendir(root)) {
+          if (entry.name === '资源占用' && entry.isDirectory() && !entry.isSymbolicLink()) continue
           if (++count > 5000) throw new Error('任务目录数量超过扫描上限。')
           const directory = join(root, entry.name)
           if (!entry.isDirectory() || entry.isSymbolicLink()) {

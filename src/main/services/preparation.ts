@@ -22,6 +22,7 @@ import {
   sep,
 } from 'node:path'
 import { homedir } from 'node:os'
+import type { TaskScheduler } from './task-scheduler'
 import type { PreparationItem, PreparationPlan, PreparationState } from '../../shared/preparation'
 import { isInternalMediaEntry } from '../../shared/media-files'
 import { mediaExtensions } from './media-inputs'
@@ -93,6 +94,7 @@ export class PreparationService {
     // 只允许服务测试注入阈值；桌面接口不接受阈值或任意路径。
     private readonly threshold = largeFileBytes,
     private readonly lock = new ExecutionLock(),
+    private readonly scheduler?: TaskScheduler,
   ) {}
 
   snapshot(): PreparationState | null {
@@ -299,8 +301,15 @@ export class PreparationService {
     this.busy = true
     this.abort = false
     this.plan = null
+    let releaseFiles: (() => void) | undefined
     try {
       const roots = await this.validate(paths)
+      releaseFiles = this.scheduler?.claim(
+        id,
+        plan.view.items.flatMap((item) =>
+          item.target ? [item.source, item.target] : [item.source],
+        ),
+      )
       if (
         key(roots.download) !== key(plan.view.download) ||
         key(roots.preprocess) !== key(plan.view.preprocess)
@@ -327,11 +336,15 @@ export class PreparationService {
         startedAt: stamp(),
         journal,
       }
-      this.work = this.execute(plan, log).finally(release)
+      this.work = this.execute(plan, log).finally(() => {
+        releaseFiles?.()
+        release()
+      })
       return this.snapshot()!
     } catch (error) {
       this.busy = false
       release()
+      releaseFiles?.()
       throw new Error(message(error))
     }
   }

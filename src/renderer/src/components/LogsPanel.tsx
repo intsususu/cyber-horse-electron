@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowDownToLine, ChevronDown, ChevronUp, Terminal } from 'lucide-react'
 import type { LogEntry } from '../hooks/use-workspace'
+import { Select } from './Select'
 
 function displayTime(value: string): string {
   const timestamp = Date.parse(value)
@@ -66,17 +67,18 @@ export function LogsPanel({ logs }: { logs: LogEntry[] }) {
         )}
         <div className="log-actions">
           {expanded && (
-            <select
-              aria-label="筛选日志"
+            <Select
+              label="筛选日志"
               value={filter}
-              onChange={(event) => {
+              onChange={(value) => {
                 follow.current = true
-                setFilter(event.target.value as typeof filter)
+                setFilter(value as typeof filter)
               }}
-            >
-              <option value="all">全部日志</option>
-              <option value="warning">仅提示</option>
-            </select>
+              options={[
+                { value: 'all', label: '全部日志' },
+                { value: 'warning', label: '仅提示' },
+              ]}
+            />
           )}
           <button
             className="icon-button"

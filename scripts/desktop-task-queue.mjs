@@ -1,3 +1,4 @@
+import { closeDesktop } from './fixtures/close-desktop.mjs'
 import { _electron as electron, expect } from '@playwright/test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
@@ -255,20 +256,21 @@ try {
   const initialTiming = await overallTiming.innerText()
   await expect.poll(() => overallTiming.innerText()).not.toBe(initialTiming)
   await expect(page.getByRole('button', { name: '清空记录' })).toBeDisabled()
-  for (const theme of ['初号机主题', '深色模式', '浅色模式']) {
+  for (const theme of ['浅色模式', '深色模式', '初号机主题', '钢铁侠主题']) {
     await run(theme)
     await capture(theme)
   }
-  await run('跟随系统')
+  await run('钢铁侠主题')
   for (const scheme of ['dark', 'light']) {
     await page.emulateMedia({ colorScheme: scheme })
-    await expect(page.locator('html')).toHaveAttribute('data-theme', scheme)
-    await capture(`跟随系统-${scheme}`)
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'ironman')
+    await capture(`钢铁侠-系统切换-${scheme}`)
   }
   await run('初号机主题')
   await run('展开运行日志')
   await expect(page.getByRole('log')).toContainText('测试工具报告真实阶段进度')
-  await page.getByLabel('筛选日志').selectOption('warning')
+  await page.getByRole('button', { name: '筛选日志', exact: true }).click()
+  await page.getByRole('option', { name: '仅提示', exact: true }).click()
   await expect(page.getByRole('log')).toContainText('测试工具返回失败')
   await capture('日志展开')
   await run('收起运行日志')
@@ -354,6 +356,10 @@ try {
   await expect(page.getByRole('heading', { name: '当前没有进行中的任务' })).toBeVisible()
   await expect(page.getByRole('button', { name: '清空记录' })).toBeEnabled()
   await run('清空记录')
+  await page
+    .getByRole('dialog', { name: '清空全部已结束记录' })
+    .getByRole('button', { name: '确认清空全部记录', exact: true })
+    .click()
   await expect(tab('已完成').locator('.count-label')).toHaveText('0')
   await expect(tab('未完成').locator('.count-label')).toHaveText('0')
   await expect(page.getByRole('button', { name: '清空记录' })).toBeDisabled()
@@ -373,5 +379,5 @@ try {
   )
   throw error
 } finally {
-  await app.close()
+  await closeDesktop(app)
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { ArrowLeft, Eye, EyeOff, Film, Heart, Play, RefreshCw, Search } from 'lucide-react'
-import type { LibraryVideo, MediaImageRequest } from '../../../shared/media-library'
+import type { LibraryVideo } from '../../../shared/media-library'
 import type { Workspace } from '../hooks/use-workspace'
 import { useMediaLibrary } from '../hooks/use-media-library'
 import { MediaPlayer } from './MediaPlayer'
@@ -10,82 +10,24 @@ import { MediaDetailInfo } from './MediaDetailInfo'
 import { MediaShelf } from './MediaShelf'
 import { MediaContextMenu, type MediaContextState } from './MediaContextMenu'
 import { MediaDeleteConfirmation } from './MediaDeleteConfirmation'
+import { Cover, MediaVideoCard } from './MediaVideoCard'
 import '../styles/media-library.css'
 
-function Cover({
-  id,
-  visible,
-  thumb = false,
-  revision,
+export function MediaLibrary({
+  active,
+  workspace,
+  entryId,
+  onExit,
+  coverVisible,
 }: {
-  id: string
-  visible: boolean
-  thumb?: boolean
-  revision: string
+  active: boolean
+  workspace: Workspace
+  entryId?: string
+  onExit?: () => void
+  coverVisible?: boolean
 }) {
-  const [image, setImage] = useState<{ key: string; data: string | null } | null>(null)
-  const [error, setError] = useState('')
-  const kind: MediaImageRequest['kind'] = visible
-    ? thumb
-      ? 'Thumb'
-      : 'Primary'
-    : thumb
-      ? 'privacyThumb'
-      : 'privacyPoster'
-  const key = `${id}:${kind}:${revision}`
-  useEffect(() => {
-    let active = true
-    setError('')
-    void window.cyberHorse
-      ?.getMediaImage({ id, kind })
-      .then((data) => {
-        if (active) setImage({ key, data })
-      })
-      .catch(() => {
-        if (active) setError(thumb ? '缩略图加载失败' : '封面加载失败')
-      })
-    return () => {
-      active = false
-    }
-  }, [key, id, kind])
-  return (
-    <div className={`media-cover ${thumb ? 'media-thumb' : ''}`}>
-      {image?.key === key && image.data ? (
-        <img
-          src={image.data}
-          alt={visible ? (thumb ? '媒体缩略图' : '媒体封面') : '隐私封面'}
-          onError={() => setImage({ key, data: null })}
-        />
-      ) : (
-        <>
-          <Film size={32} />
-          <span>
-            {!visible
-              ? thumb
-                ? '缩略图已隐藏'
-                : '封面已隐藏'
-              : error || (thumb ? '暂无缩略图' : '暂无封面')}
-          </span>
-        </>
-      )}
-    </div>
-  )
-}
-
-function splitRelatedName(name: string) {
-  const number = /^((?:[A-Z0-9]{2,12}-){1,2}\d{2,8}[A-Z]?)(?=$|[\s:：|｜·—–-])/i.exec(name)?.[1]
-  if (!number) return { number: '', title: name }
-  return {
-    number,
-    title: name
-      .slice(number.length)
-      .replace(/^[\s:：|｜·—–-]+/, '')
-      .trim(),
-  }
-}
-
-export function MediaLibrary({ active, workspace }: { active: boolean; workspace: Workspace }) {
-  const library = useMediaLibrary(workspace, active)
+  const library = useMediaLibrary(workspace, active, entryId, coverVisible)
+  const entryBack = useRef<HTMLButtonElement>(null)
   const [source, setSource] = useState('')
   const [queueingItems, setQueueingItems] = useState<Set<string>>(() => new Set())
   const queueingRef = useRef(new Set<string>())
@@ -117,6 +59,9 @@ export function MediaLibrary({ active, workspace }: { active: boolean; workspace
   }, [active, view?.kind])
   const revision = JSON.stringify([workspace.settings.mediaServer, workspace.settings.privacyCover])
   const detailId = view?.kind === 'detail' ? view.detail.id : ''
+  useEffect(() => {
+    if (entryId && detailId) entryBack.current?.focus()
+  }, [entryId, detailId])
   const selectedSource =
     view?.kind === 'detail'
       ? (view.detail.sources.find((item) => item.id === source) ?? view.detail.sources[0])
@@ -225,49 +170,20 @@ export function MediaLibrary({ active, workspace }: { active: boolean; workspace
     }
   }
   useEffect(() => setSource(''), [detailId])
-  const card = (item: LibraryVideo, compact = false) => {
-    const relatedName = compact ? splitRelatedName(item.name) : null
-    return (
-      <article
-        className={`media-card ${compact ? 'media-card-compact' : ''}`}
-        key={item.id}
-        onContextMenu={(event) => openContextMenu(event, item)}
-      >
-        <button
-          className="media-card-open"
-          onClick={() => void library.openDetail(item.id)}
-          disabled={busy || !!action}
-          aria-label={`查看详情：${item.name}`}
-        >
-          <Cover id={item.id} visible={visible} thumb={compact} revision={revision} />
-          {relatedName ? (
-            <>
-              {relatedName.number && <strong>{relatedName.number}</strong>}
-              {relatedName.title && <span className="media-related-name">{relatedName.title}</span>}
-            </>
-          ) : (
-            <>
-              <strong>{item.name}</strong>
-              <small>
-                {[item.year, item.minutes !== null ? `${item.minutes} 分钟` : '']
-                  .filter(Boolean)
-                  .join(' · ') || '暂无年份与时长'}
-              </small>
-            </>
-          )}
-        </button>
-        <button
-          className={`media-heart icon-button ${item.favorite ? 'is-favorite' : ''}`}
-          aria-label={`${item.favorite ? '取消收藏' : '收藏'}：${item.name}`}
-          aria-pressed={item.favorite}
-          disabled={!!action}
-          onClick={() => void library.favorite(item)}
-        >
-          <Heart size={18} fill={item.favorite ? 'currentColor' : 'none'} />
-        </button>
-      </article>
-    )
-  }
+  const card = (item: LibraryVideo, compact = false) => (
+    <MediaVideoCard
+      key={item.id}
+      item={item}
+      compact={compact}
+      visible={visible}
+      revision={revision}
+      busy={busy}
+      action={action}
+      onOpen={(id) => void library.openDetail(id)}
+      onFavorite={(video) => void library.favorite(video)}
+      onContextMenu={openContextMenu}
+    />
+  )
   return (
     <section
       hidden={!active}
@@ -276,26 +192,28 @@ export function MediaLibrary({ active, workspace }: { active: boolean; workspace
     >
       <div className="media-browser" inert={playing}>
         <div className="media-toolbar" aria-label="媒体库浏览工具">
-          {library.history.length > 0 && (
+          {(onExit || library.history.length > 0) && (
             <button
+              ref={entryBack}
               className="icon-button media-back-button"
               title="返回"
               aria-label="返回"
               disabled={busy || !!action}
-              onClick={library.back}
+              onClick={library.history.length > 0 ? library.back : onExit}
             >
               <ArrowLeft size={17} />
             </button>
           )}
-          {library.libraries.length > 0 && view?.kind !== 'search' && (
+          {library.libraries.length > 0 && view?.kind === 'wall' && (
             <MediaLibraryPicker
               libraries={library.libraries}
-              value={library.currentListing?.query.libraryId ?? library.libraries[0]?.id ?? ''}
+              value={view.query.libraryId ?? ''}
+              allowAll={!!entryId || !view.query.libraryId}
               disabled={busy || !!action}
               onChange={(id) =>
                 void library.loadWall(
                   {
-                    libraryId: id,
+                    libraryId: id || undefined,
                     start: 0,
                     limit: 30,
                     sort: 'DateCreated',
@@ -309,7 +227,7 @@ export function MediaLibrary({ active, workspace }: { active: boolean; workspace
           )}
           {view?.kind === 'search' && (
             <span className="media-search-scope">
-              搜索范围：{searchLibrary?.name ?? '当前媒体库'}
+              搜索范围：{searchLibrary?.name ?? '全部媒体库'}
             </span>
           )}
           {view?.kind === 'wall' && view.query.filter && (
@@ -491,7 +409,7 @@ export function MediaLibrary({ active, workspace }: { active: boolean; workspace
               {busy && <p className="media-search-summary">正在搜索当前媒体库…</p>}
               {view.query.searchTerm && view.page && (
                 <p className="media-search-summary">
-                  “{view.query.searchTerm}”在{searchLibrary?.name ?? '当前媒体库'}找到{' '}
+                  “{view.query.searchTerm}”在{searchLibrary?.name ?? '全部媒体库'}找到{' '}
                   {view.page.total} 项
                 </p>
               )}

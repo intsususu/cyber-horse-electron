@@ -27,7 +27,12 @@ type View =
   | { kind: 'detail'; detail: MediaDetail; similar: LibraryVideo[]; similarError: string }
 const isListing = (value: View | null): value is ListingView =>
   value?.kind === 'wall' || value?.kind === 'search'
-export function useMediaLibrary(workspace: Workspace, active: boolean) {
+export function useMediaLibrary(
+  workspace: Workspace,
+  active: boolean,
+  entryId?: string,
+  coverVisible?: boolean,
+) {
   const [libraries, setLibraries] = useState<MediaLibrary[]>([])
   const [connected, setConnected] = useState(false)
   const [view, setView] = useState<View | null>(null)
@@ -45,7 +50,9 @@ export function useMediaLibrary(workspace: Workspace, active: boolean) {
     setDeletion(null)
     resolve?.(confirmed)
   }
-  const [visible, setVisible] = useState(workspace.settings.privacyCover.defaultEyeOpen)
+  const [visible, setVisible] = useState(
+    coverVisible ?? workspace.settings.privacyCover.defaultEyeOpen,
+  )
   const sequence = useRef(0)
   const actionLock = useRef(false)
   const autoAttempt = useRef<string | null>(null)
@@ -121,8 +128,12 @@ export function useMediaLibrary(workspace: Workspace, active: boolean) {
     loadPage(query, append, push)
   const loadSearch = (query: MediaQuery, append = false) => loadPage(query, append, false, 'search')
   const openSearch = () => {
-    const libraryId = currentListing?.query.libraryId ?? libraries[0]?.id
-    if (!libraryId) return
+    const libraryId = currentListing
+      ? currentListing.query.libraryId
+      : entryId
+        ? undefined
+        : libraries[0]?.id
+    if (!libraryId && !currentListing && !entryId) return
     sequence.current++
     remember()
     setError('')
@@ -148,14 +159,15 @@ export function useMediaLibrary(workspace: Workspace, active: boolean) {
       if (request !== sequence.current) return
       setLibraries(libraries)
       setConnected(true)
-      if (libraries[0]) await loadWall({ ...baseQuery, libraryId: libraries[0].id })
+      if (entryId) await openDetail(entryId, false)
+      else if (libraries[0]) await loadWall({ ...baseQuery, libraryId: libraries[0].id })
     } catch (error) {
       if (request === sequence.current) setError(message(error))
     } finally {
       if (request === sequence.current) setBusy(false)
     }
     // 连接仅使用主进程已保存配置。
-  }, [])
+  }, [entryId])
   useEffect(() => {
     sequence.current++
     autoAttempt.current = null
@@ -194,8 +206,8 @@ export function useMediaLibrary(workspace: Workspace, active: boolean) {
     workspace.settings.mediaServer.username,
   ])
   useEffect(
-    () => setVisible(workspace.settings.privacyCover.defaultEyeOpen),
-    [workspace.settings.privacyCover.defaultEyeOpen],
+    () => setVisible(coverVisible ?? workspace.settings.privacyCover.defaultEyeOpen),
+    [coverVisible, workspace.settings.privacyCover.defaultEyeOpen],
   )
   const openDetail = async (id: string, push = true) => {
     const api = window.cyberHorse
@@ -338,17 +350,28 @@ export function useMediaLibrary(workspace: Workspace, active: boolean) {
         if (request === sequence.current) mutateViews(item.id, favorite)
       }),
     filter: (filter: MediaQuery['filter']) => {
-      if (currentListing)
-        void loadWall(
-          { ...currentListing.query, start: 0, favorites: false, searchTerm: undefined, filter },
-          false,
-          true,
-        )
+      void loadWall(
+        {
+          ...(currentListing?.query ?? baseQuery),
+          start: 0,
+          favorites: false,
+          searchTerm: undefined,
+          filter,
+        },
+        false,
+        true,
+      )
     },
     refresh: () =>
       perform('refresh', async () => {
         const request = sequence.current
         const id = view?.kind === 'detail' ? view.detail.id : currentListing?.query.libraryId
+        if (!id && currentListing) {
+          const query = { ...currentListing.query, start: 0 }
+          if (currentListing.kind === 'search' && query.searchTerm) await loadSearch(query)
+          else await loadWall(query)
+          return
+        }
         if (!id) return
         await window.cyberHorse!.refreshMediaItem(id)
         if (request !== sequence.current) return

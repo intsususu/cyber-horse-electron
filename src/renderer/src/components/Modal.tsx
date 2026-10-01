@@ -8,6 +8,7 @@ export function Modal({
   className = '',
   descriptionId,
   initialFocusRef,
+  returnFocusRef,
 }: {
   title: string
   children: ReactNode
@@ -15,11 +16,12 @@ export function Modal({
   className?: string
   descriptionId?: string
   initialFocusRef?: RefObject<HTMLElement | null>
+  returnFocusRef?: RefObject<HTMLElement | null>
 }) {
   const ref = useRef<HTMLDialogElement>(null)
   const titleId = useId()
   useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null
+    const previous = returnFocusRef?.current ?? (document.activeElement as HTMLElement | null)
     const dialog = ref.current
     dialog?.showModal()
     initialFocusRef?.current?.focus()
@@ -27,7 +29,7 @@ export function Modal({
       dialog?.close()
       previous?.focus()
     }
-  }, [initialFocusRef])
+  }, [initialFocusRef, returnFocusRef])
   return (
     <dialog
       ref={ref}

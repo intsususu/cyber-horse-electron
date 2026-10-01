@@ -2,6 +2,29 @@
   display: flex;
   flex-direction: column;
 }
+.workspace-task-path {
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}
+.workspace-task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--page-gap);
+  align-items: center;
+}
+.workspace-task-files {
+  max-height: 240px;
+  overflow: auto;
+  display: grid;
+  gap: var(--page-gap);
+  padding-block: var(--page-gap);
+}
+.workspace-delete-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--page-gap);
+  margin-block: var(--page-gap);
+}
 .queue-layout .task-panel {
   flex: 1;
   min-height: 0;
@@ -124,9 +147,11 @@
   flex-shrink: 0;
   white-space: nowrap;
 }
-.queue-card .task-status.running,
+.queue-card .task-status.running {
+  color: var(--accent);
+}
 .queue-card .task-status.completed {
-  color: var(--green);
+  color: var(--success);
 }
 .queue-card .task-status.failed,
 .queue-card .task-status.interrupted {
@@ -173,7 +198,7 @@
   width: 100%;
   height: 7px;
   margin-top: 10px;
-  accent-color: var(--green);
+  accent-color: var(--accent);
 }
 .queue-card .media-process-step {
   background: var(--surface);

@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import type { PipelineStep, PipelineProgress } from './pipeline'
+import { mediaUserDataSnapshotSchema } from './media-user-data'
 
 const label = z.string().trim().min(1).max(512)
 const instant = z.string().datetime()
@@ -85,6 +87,61 @@ export const taskArtifactSchema = z
     '已校验文件缺少快照',
   )
 
+export const taskPublicationSchema = z
+  .object({
+    source: taskRelativePathSchema,
+    target: taskAbsolutePathSchema,
+    sha256: digest,
+    size: z.number().int().positive(),
+    state: z.enum(['pending', 'committing', 'published', 'cleaned']),
+    previous: taskFileStampSchema.nullable(),
+    // NAS 只使用写入成功后持久化的快照；旧记录缺失时禁止推断发布成功。
+    stagedStamp: taskFileStampSchema.optional(),
+    targetStamp: taskFileStampSchema.optional(),
+  })
+  .strict()
+
+export const taskContextSchema = z
+  .object({
+    configuration: digest,
+    media: z
+      .object({
+        processId: z.string().uuid(),
+        downloadId: z.string().uuid(),
+        name: label,
+      })
+      .strict()
+      .optional(),
+    replacements: z
+      .array(
+        z
+          .object({
+            path: taskAbsolutePathSchema,
+            stamp: taskFileStampSchema,
+            sha256: digest.nullable(),
+            removed: z.boolean().default(false),
+            removalPending: z.boolean().default(false),
+          })
+          .strict(),
+      )
+      .max(1000)
+      .default([]),
+    sync: z
+      .object({
+        server: digest,
+        serverIdentity: digest.nullable().default(null),
+        itemId: z.string().min(1).max(200),
+        originalRemotePath: z.string().min(1).max(4096),
+        userData: mediaUserDataSnapshotSchema.optional(),
+        state: z.enum(['pending', 'confirmed', 'waived']),
+        message: z.string().max(2000),
+      })
+      .strict()
+      .nullable()
+      .default(null),
+  })
+  .strict()
+
 export const taskFileSchema = z
   .object({
     id: z.string().uuid(),
@@ -102,6 +159,7 @@ export const taskFileSchema = z
             stamp: taskFileStampSchema,
             target: taskRelativePathSchema,
             state: z.enum(['pending', 'claiming', 'claimed']),
+            copy: z.boolean().default(false),
           })
           .strict(),
       )
@@ -118,14 +176,17 @@ export const taskFileSchema = z
             endedAt: instant.nullable(),
             message: z.string().max(2000),
             inputVideo: taskRelativePathSchema.nullable().default(null),
+            inputFiles: z.array(taskRelativePathSchema).max(1000).default([]),
             outputVideo: taskRelativePathSchema.nullable().default(null),
             outputFiles: z.array(taskRelativePathSchema).max(1000).default([]),
+            attempt: z.number().int().nonnegative().max(1000).default(0),
           })
           .strict(),
       )
       .min(1)
       .max(taskSteps.length),
     artifacts: z.array(taskArtifactSchema).max(1000),
+    publications: z.array(taskPublicationSchema).max(1000).default([]),
   })
   .strict()
   .superRefine((file, ctx) => {
@@ -133,8 +194,9 @@ export const taskFileSchema = z
     const paths = [
       ...file.sources.map((source) => source.target),
       ...file.artifacts.map((a) => a.path),
+      ...file.publications.map((publication) => publication.source),
       ...file.steps.flatMap((step) =>
-        [step.inputVideo, step.outputVideo, ...step.outputFiles].filter(
+        [step.inputVideo, step.outputVideo, ...step.inputFiles, ...step.outputFiles].filter(
           (path): path is string => path !== null,
         ),
       ),
@@ -164,9 +226,11 @@ export const taskManifestSchema = z
       })
       .strict(),
     state: taskStateSchema,
+    removalAction: z.enum(['keep', 'delete']).optional(),
     steps: z.array(taskStepSchema).min(1).max(taskSteps.length),
     files: z.array(taskFileSchema).min(1).max(5000),
     message: z.string().max(2000),
+    context: taskContextSchema.nullable().default(null),
   })
   .strict()
   .superRefine((task, ctx) => {
@@ -221,3 +285,41 @@ export const taskRootRegistrySchema = z
     roots: z.array(taskAbsolutePathSchema).max(1000),
   })
   .strict()
+
+export const taskIdRequestSchema = z.object({ id: z.string().uuid() }).strict()
+export const taskActionSchema = z.enum(['resume', 'keep', 'delete', 'finish'])
+export const taskPreviewRequestSchema = taskIdRequestSchema
+  .extend({ action: taskActionSchema })
+  .strict()
+export type TaskAction = z.infer<typeof taskActionSchema>
+export type TaskView = {
+  task: TaskManifest
+  directory: string
+  active: boolean
+  recoverable: boolean
+  diagnostic: string
+  progress?: Partial<Record<PipelineStep, PipelineProgress>>
+}
+export type TaskActionPlan = {
+  planId: string
+  revision: number
+  id: string
+  action: TaskAction
+  name: string
+  directory: string
+  destination: string
+  files: { path: string; size: number; disposition: string }[]
+  summary: { name: string; sources: string[]; steps: TaskFile['steps']; published: string[] }[]
+  warnings: string[]
+  expiresAt: number
+}
+export interface TaskApi {
+  listWorkspaceTasks(): Promise<{
+    tasks: TaskView[]
+    diagnostics: { directory: string; message: string }[]
+  }>
+  cancelWorkspaceTask(request: { id: string }): Promise<void>
+  previewWorkspaceAction(request: { id: string; action: TaskAction }): Promise<TaskActionPlan>
+  confirmWorkspaceAction(request: { planId: string; revision: number }): Promise<void>
+  openWorkspaceDirectory(request: { id: string }): Promise<void>
+}

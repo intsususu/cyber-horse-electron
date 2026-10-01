@@ -1,7 +1,7 @@
-/* 工作台以独立预处理、四步流程和文件清单组成。 */
+/* 工作台以四步流程和含独立预处理入口的文件清单组成。 */
 .workbench-layout {
   display: grid;
-  grid-template-rows: 56px auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: var(--page-gap);
 }
 .environment-modal {
@@ -95,7 +95,7 @@
   color: var(--warning);
 }
 .health-ready {
-  color: var(--green);
+  color: var(--success);
 }
 .environment-check[data-state='checking']::after {
   content: '';
@@ -123,33 +123,6 @@
     transform: scale(1);
   }
 }
-.preparation-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--page-gap);
-  padding: 0 var(--panel-padding);
-  border-bottom: 1px solid var(--border-subtle);
-}
-.preparation-icon {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 32px;
-  flex-shrink: 0;
-  color: var(--text-secondary);
-}
-.preparation-bar h2 {
-  font-size: 16px;
-  font-weight: 600;
-}
-.preparation-run {
-  margin-left: var(--page-gap);
-  min-height: 36px;
-  flex-shrink: 0;
-  background: var(--surface);
-  color: var(--text-secondary);
-  border-color: var(--border);
-}
 .workbench-step .step-action {
   background: var(--surface-raised);
   border: 1px solid var(--border);
@@ -164,7 +137,6 @@
   color: var(--text);
 }
 .preparation-state {
-  margin-left: auto;
   font-size: var(--font-small);
   color: var(--text-muted);
 }
@@ -269,7 +241,7 @@
   width: 18px;
   height: 18px;
   margin: 0;
-  accent-color: var(--green);
+  accent-color: var(--accent);
   cursor: pointer;
 }
 .workbench-step.included {
@@ -316,11 +288,13 @@
   color: var(--text-muted);
 }
 .workbench-step.active {
-  border-color: var(--green);
+  border-color: var(--accent);
 }
-.workbench-step-status.running,
+.workbench-step-status.running {
+  color: var(--accent);
+}
 .workbench-step-status.succeeded {
-  color: var(--green);
+  color: var(--success);
 }
 .input-panel {
   display: flex;
@@ -329,31 +303,20 @@
 }
 .input-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 18px;
-  padding: 14px 20px;
+  gap: var(--page-gap);
+  padding: var(--panel-padding);
   min-height: 62px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.directory-trigger {
-  display: flex;
-  align-items: center;
-  gap: 15px;
-  min-width: 0;
-  max-width: 280px;
-  min-height: 34px;
-  padding: 0;
-  text-align: left;
-}
-.directory-trigger span {
-  min-width: 0;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  overflow: hidden;
-}
-.input-refresh {
+.directory-trigger,
+.input-refresh,
+.preparation-run {
   flex-shrink: 0;
+  width: 40px;
+  height: 40px;
 }
 .subdirectory-option {
   display: flex;
@@ -366,7 +329,7 @@
 .input-panel input[type='checkbox'],
 .file-selection-list input {
   appearance: auto;
-  accent-color: var(--green);
+  accent-color: var(--accent);
   width: 18px;
   height: 18px;
   margin: 0;
@@ -411,7 +374,8 @@
 .input-file-row:hover {
   background: var(--surface-hover);
 }
-.input-file-row label {
+.input-file-row label,
+.input-select-all {
   display: flex;
   align-items: center;
   gap: 24px;
@@ -531,7 +495,7 @@
   stroke: var(--border);
 }
 .metric-chart .chart-primary {
-  stroke: var(--green);
+  stroke: var(--accent);
 }
 .metric-chart .chart-secondary {
   stroke: var(--blue);
@@ -650,9 +614,6 @@
   .scope-switch button {
     padding: 6px 10px;
   }
-  .directory-trigger {
-    max-width: 200px;
-  }
 }
 @media (max-width: 1120px) {
   .pipeline-arrow {
@@ -667,7 +628,7 @@
 }
 @media (max-width: 900px) {
   .workbench-layout {
-    grid-template-rows: auto auto minmax(300px, 1fr);
+    grid-template-rows: auto minmax(300px, 1fr);
   }
   .workbench-flow {
     grid-template-rows: auto auto;
@@ -698,13 +659,6 @@
   .file-selection-toolbar,
   .file-selection-footer {
     flex-wrap: wrap;
-  }
-  .preparation-run {
-    margin-left: 0;
-  }
-  .preparation-bar {
-    flex-wrap: wrap;
-    padding-bottom: var(--page-gap);
   }
   .workflow-layout > .workflow-panel,
   .special-detail-grid {
@@ -780,7 +734,7 @@
     grid-template-columns: minmax(0, 1fr) 70px 32px;
     gap: 8px;
   }
-  .input-file-header {
+  .input-file-header > span:nth-child(3) {
     display: none;
   }
   .input-file-row .file-modified {

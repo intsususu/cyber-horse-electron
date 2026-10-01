@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
 import {
   defaultSettings,
   parseStoredSettings,
@@ -160,16 +160,25 @@ export function useWorkspace() {
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [])
-  useEffect(() => {
-    const media = window.matchMedia('(prefers-color-scheme: dark)')
-    const update = () => {
-      document.documentElement.dataset.theme =
-        settings.theme === 'system' ? (media.matches ? 'dark' : 'light') : settings.theme
-    }
-    update()
-    media.addEventListener('change', update)
-    return () => media.removeEventListener('change', update)
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = settings.theme
   }, [settings.theme])
+  useEffect(() => {
+    if (!loaded) return
+    let paintedFrame = 0
+    // 隐藏窗口仍会绘制，待保存的主题完成一帧后再通知主进程显示。
+    const firstFrame = requestAnimationFrame(() => {
+      paintedFrame = requestAnimationFrame(() => {
+        void window.cyberHorse?.windowReady?.().catch(() => {
+          setToast('窗口就绪通知失败，请完整退出后重新启动应用。')
+        })
+      })
+    })
+    return () => {
+      cancelAnimationFrame(firstFrame)
+      cancelAnimationFrame(paintedFrame)
+    }
+  }, [loaded])
   useEffect(() => {
     if (!toast) return
     const timer = window.setTimeout(() => setToast(''), 4500)

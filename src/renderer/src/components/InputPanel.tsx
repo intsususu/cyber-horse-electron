@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import {
+  Broom,
   FileVideo,
   Files,
   FolderOpen,
@@ -12,6 +13,7 @@ import {
 import type { Workspace } from '../hooks/use-workspace'
 import type { Page } from '../data/catalog'
 import { formatBytes, formatModifiedAt } from '../lib/format'
+import { statusNames } from '../lib/workflow'
 import { Modal } from './Modal'
 
 export function InputPanel({
@@ -33,10 +35,10 @@ export function InputPanel({
   const pageCount = Math.max(1, Math.ceil(filtered.length / 50))
   const currentPage = Math.min(page, pageCount - 1)
   const blocked = running || workspace.starting || inputs.busy
-  const directoryName =
-    inputs.source === 'preprocess'
-      ? '预处理目录'
-      : inputs.directory.split(/[\\/]/).filter(Boolean).at(-1) || '工作目录'
+  const preparation = workspace.run.tasks.find((task) => task.id === 'prepare')
+  const prepared = !!workspace.settings.paths.download && !!workspace.settings.paths.preprocess
+  const allSelected = all.length > 0 && inputs.files.length === all.length
+  const partiallySelected = inputs.files.length > 0 && !allSelected
   async function openDirectory() {
     if (!window.cyberHorse) {
       workspace.setToast('请在桌面应用中打开工作目录。')
@@ -58,14 +60,32 @@ export function InputPanel({
       <section className="panel input-panel" aria-label="工作目录">
         <div className="input-toolbar">
           <button
-            className="directory-trigger"
+            className="icon-button directory-trigger"
             disabled={!inputs.directory || !window.cyberHorse}
             aria-label={inputs.source === 'preprocess' ? '打开预处理目录' : '打开当前工作目录'}
             title={inputs.directory || '请先设置工作目录'}
             onClick={() => void openDirectory()}
           >
-            <FolderOpen size={22} />
-            <span>{directoryName}</span>
+            <FolderOpen size={26} aria-hidden="true" />
+          </button>
+          <button
+            className="icon-button preparation-run"
+            disabled={blocked}
+            title={
+              preparation?.status === 'running'
+                ? '文件预处理中'
+                : prepared
+                  ? '文件预处理：提取清理并重命名，预览确认后执行'
+                  : '配置预处理：设置下载目录和预处理目录'
+            }
+            aria-label={prepared ? '文件预处理' : '配置预处理目录'}
+            onClick={() => (prepared ? void workspace.startPreparation() : navigate('settings'))}
+          >
+            {preparation?.status === 'running' ? (
+              <LoaderCircle className="spin" size={26} aria-hidden="true" />
+            ) : (
+              <Broom size={26} aria-hidden="true" />
+            )}
           </button>
           <button
             className="icon-button input-refresh"
@@ -74,7 +94,7 @@ export function InputPanel({
             aria-label="刷新"
             onClick={() => void inputs.refresh()}
           >
-            <RefreshCw size={20} className={inputs.busy ? 'spin' : ''} />
+            <RefreshCw size={26} className={inputs.busy ? 'spin' : ''} aria-hidden="true" />
           </button>
           <label className="subdirectory-option">
             <input
@@ -133,8 +153,21 @@ export function InputPanel({
           </div>
         )}
         <div className="input-file-preview" role="region" aria-label="工作台文件清单" tabIndex={0}>
-          <div className="input-file-header" aria-hidden="true">
-            <span>文件名</span>
+          <div className="input-file-header">
+            <label className="input-select-all">
+              <input
+                type="checkbox"
+                aria-label="全选文件"
+                title="全选或取消全部文件"
+                checked={allSelected}
+                ref={(element) => {
+                  if (element) element.indeterminate = partiallySelected
+                }}
+                disabled={blocked || !all.length || !!inputs.error}
+                onChange={(event) => (event.target.checked ? inputs.selectAll() : inputs.clear())}
+              />
+              <span>文件名</span>
+            </label>
             <span>文件大小</span>
             <span>最近修改时间</span>
             <span />
@@ -190,6 +223,14 @@ export function InputPanel({
                 : `已选 ${inputs.files.length} / ${all.length} 个`}
               {running ? ' · 运行中' : ''}
             </span>
+            {preparation && (
+              <span className="preparation-state">
+                预处理：
+                {preparation.status === 'running'
+                  ? `${preparation.progress}%`
+                  : statusNames[preparation.status]}
+              </span>
+            )}
             {inputs.scope === 'selected' && (
               <button className="text-button" disabled={blocked} onClick={inputs.clear}>
                 清空选择

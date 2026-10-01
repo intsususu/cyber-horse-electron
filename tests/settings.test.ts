@@ -45,19 +45,24 @@ describe('本地配置和文件保护', () => {
     expect((await new SettingsStore(folder).load()).settings.theme).toBe('light')
     expect(await readdir(folder)).toEqual(['settings.json'])
   })
-  it('初号机主题可持久化，旧版主题和路径保持兼容', async () => {
+  it.each([1, 2])('版本 %i 的系统主题迁移为初号机，钢铁侠可保存并恢复', async (version) => {
     const folder = await mkdtemp(join(tmpdir(), 'cyber-horse-test-'))
     const store = new SettingsStore(folder)
     const legacy = {
-      ...defaultSettings,
+      ...(version === 1 ? { version } : defaultSettings),
       theme: 'system' as const,
       paths: { ...defaultSettings.paths, preprocess: folder },
     }
     await writeFile(join(folder, 'settings.json'), JSON.stringify(legacy))
     const restored = (await store.load()).settings
-    expect(restored).toEqual(legacy)
-    await store.save({ ...restored, theme: 'eva' })
-    expect((await new SettingsStore(folder).load()).settings).toEqual({ ...legacy, theme: 'eva' })
+    expect(restored).toEqual({ ...defaultSettings, paths: legacy.paths })
+    expect(JSON.parse(await readFile(join(folder, 'settings.json'), 'utf8'))).toEqual(restored)
+    expect(settingsSchema.safeParse({ ...restored, theme: 'system' }).success).toBe(false)
+    await store.save({ ...restored, theme: 'ironman' })
+    expect((await new SettingsStore(folder).load()).settings).toEqual({
+      ...restored,
+      theme: 'ironman',
+    })
   })
   it('旧配置移除 MDC 工具日志目录并补上播放器默认静音', async () => {
     const folder = await mkdtemp(join(tmpdir(), 'cyber-horse-test-'))
@@ -139,7 +144,7 @@ describe('本地配置和文件保护', () => {
     ).toHaveLength(1)
     await unlink(store.filePath)
     expect((await store.load()).settings).toEqual(saved)
-    const fixed = { ...saved, subtitle: { format: 'ass' as const } }
+    const fixed = { ...saved, subtitle: { ...saved.subtitle, format: 'ass' as const } }
     await writeFile(store.filePath, '\uFEFF' + JSON.stringify(fixed))
     expect(await store.load()).toEqual({ settings: fixed })
   })

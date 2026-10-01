@@ -1,4 +1,4 @@
-import { ArrowRight, Check, FolderOpen, LoaderCircle, Play, Settings2 } from 'lucide-react'
+import { ArrowRight, Check, FolderOpen, LoaderCircle, Play } from 'lucide-react'
 import type { PathKey, WorkDirectoryKey } from '../../../shared/contracts'
 import { pathLabels, workbenchSteps, type Page } from '../data/catalog'
 import type { Workspace } from '../hooks/use-workspace'
@@ -14,8 +14,6 @@ export function Workbench({
   navigate: (page: Page, path?: PathKey) => void
 }) {
   const blocked = workspace.running || workspace.starting || workspace.inputs.busy
-  const preparation = workspace.run.tasks.find((task) => task.id === 'prepare')
-  const prepared = !!workspace.settings.paths.download && !!workspace.settings.paths.preprocess
   const selectedCount = workspace.selectedWorkbenchIds.length
   const allSteps = selectedCount === workbenchSteps.length
   const runLabel = allSteps
@@ -36,35 +34,6 @@ export function Workbench({
   }
   return (
     <div className="workspace-body workbench-layout">
-      <section className="preparation-bar" aria-label="独立预处理">
-        <span className="preparation-icon">
-          <FolderOpen size={22} />
-        </span>
-        <h2>提取清理并重命名</h2>
-        <button
-          className="secondary-button preparation-run"
-          disabled={blocked}
-          title={prepared ? '预览提取、清理与重命名清单，确认后执行' : '设置下载目录和预处理目录'}
-          aria-label={prepared ? '开始预处理' : '配置预处理目录'}
-          onClick={() => (prepared ? void workspace.startPreparation() : navigate('settings'))}
-        >
-          {preparation?.status === 'running' ? (
-            <LoaderCircle className="spin" size={18} />
-          ) : prepared ? (
-            <Play size={18} />
-          ) : (
-            <Settings2 size={18} />
-          )}
-          {preparation?.status === 'running' ? '预处理中' : prepared ? '开始预处理' : '配置预处理'}
-        </button>
-        {preparation && (
-          <span className="preparation-state">
-            {preparation.status === 'running'
-              ? `${preparation.progress}%`
-              : statusNames[preparation.status]}
-          </span>
-        )}
-      </section>
       <section className="workbench-flow" aria-label="后续四步流程">
         <div className="workbench-flow-header">
           <div className="workbench-flow-title">

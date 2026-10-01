@@ -1,6 +1,15 @@
 import { expect } from '@playwright/test'
 import { createServer } from 'node:http'
-import { mkdtemp, mkdir, writeFile, readFile, copyFile, realpath, unlink } from 'node:fs/promises'
+import {
+  mkdtemp,
+  mkdir,
+  writeFile,
+  readFile,
+  copyFile,
+  realpath,
+  unlink,
+  readdir,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { execFile } from 'node:child_process'
@@ -59,6 +68,7 @@ export async function verifyMediaLibrary(app, page, output) {
   let delayPlaybackDetail = false
   let queueDetailGate = null
   let deletionTitle = ''
+  let publishedRemotePath = null
   const item = (id) => ({
     Id: id,
     Name:
@@ -74,16 +84,21 @@ export async function verifyMediaLibrary(app, page, output) {
         ? ''
         : '这是隔离服务器返回的测试简介，用于验证中文详情、筛选、收藏与文件保护。影片讲述了一段从城市出发、沿着山路与海岸行进的旅程，人们在不同的风景中相遇，也在一次次告别中重新认识彼此。镜头记录清晨的街道、午后的车站和傍晚的海边，让日常生活中的细节慢慢展开。这段较长的简介用于检查默认摘要、展开阅读和收起后的页面位置，所有内容与图片均为隔离验证样本。',
     DateCreated: '2026-09-01T08:00:00Z',
-    Path: '/test/影片/ABC-123.mp4',
+    Path: id === 'v1' && publishedRemotePath ? publishedRemotePath : '/test/影片/ABC-123.mp4',
     Genres: ['剧情'],
     People: [{ Id: 12, Name: '测试演员', Role: '主角' }],
     Studios: [{ Name: '测试制作公司' }],
-    UserData: { IsFavorite: favorites.has(id) },
+    UserData: {
+      IsFavorite: favorites.has(id),
+      PlayCount: 3,
+      Played: true,
+      PlaybackPositionTicks: 0,
+    },
     MediaSources: [
       {
         Id: 'source1',
         Name: '原始版本',
-        Path: '/test/影片/ABC-123.mp4',
+        Path: id === 'v1' && publishedRemotePath ? publishedRemotePath : '/test/影片/ABC-123.mp4',
         Container: 'webm',
         Size: payload.length,
         DefaultSubtitleStreamIndex: 2,
@@ -197,6 +212,10 @@ export async function verifyMediaLibrary(app, page, output) {
       return
     }
     if (url.pathname.endsWith('/Refresh')) {
+      const published = (await readdir(originalFolder)).find((name) =>
+        /^ABC-123-(?:U|hack)\.mkv$/.test(name),
+      )
+      if (published) publishedRemotePath = '/test/影片/' + published
       res.writeHead(204)
       res.end()
       return
@@ -424,7 +443,7 @@ export async function verifyMediaLibrary(app, page, output) {
     const contextMenu = page.getByRole('dialog', { name: '快捷操作：测试影片 ABC-123' })
     await firstCard.click({ button: 'right' })
     await expect(contextMenu).toBeVisible()
-    await expect(contextMenu.getByRole('button')).toHaveText([
+    await expect(contextMenu.locator('.media-context-actions').getByRole('button')).toHaveText([
       '中文字幕',
       '视频破解',
       '下载',
@@ -432,9 +451,14 @@ export async function verifyMediaLibrary(app, page, output) {
       '删除媒体',
     ])
     await expect(contextMenu.getByRole('button', { name: '中文字幕' })).toBeEnabled()
-    await expect(contextMenu.getByLabel('快捷操作使用的媒体版本')).toHaveValue('source1')
-    await contextMenu.getByLabel('快捷操作使用的媒体版本').selectOption('source2')
-    await expect(contextMenu.getByLabel('快捷操作使用的媒体版本')).toHaveValue('source2')
+    await expect(
+      contextMenu.getByRole('button', { name: '快捷操作使用的媒体版本', exact: true }),
+    ).toContainText('版本 1')
+    await contextMenu.getByRole('button', { name: '快捷操作使用的媒体版本', exact: true }).click()
+    await contextMenu.getByRole('option', { name: /^版本 2/ }).click()
+    await expect(
+      contextMenu.getByRole('button', { name: '快捷操作使用的媒体版本', exact: true }),
+    ).toContainText('版本 2')
     await page.keyboard.press('Escape')
     await expect(contextMenu).toHaveCount(0)
     await expect(
@@ -453,7 +477,7 @@ export async function verifyMediaLibrary(app, page, output) {
       'aria-pressed',
       'false',
     )
-    for (const theme of ['初号机主题', '深色模式', '浅色模式', '跟随系统']) {
+    for (const theme of ['初号机主题', '深色模式', '浅色模式', '钢铁侠主题']) {
       await run(theme)
       await expect(page.getByRole('button', { name: theme, exact: true })).toHaveAttribute(
         'aria-pressed',
@@ -537,6 +561,7 @@ export async function verifyMediaLibrary(app, page, output) {
     })
     await run('查看详情：测试影片 ABC-123')
     await expect(page.locator('.media-detail h2')).toHaveText('测试影片 ABC-123')
+    await expect(libraryPicker).toHaveCount(0)
     await run('EMBY媒体库')
     await expect(page.locator('.media-detail')).toHaveCount(0)
     await expect(wall()).toHaveCount(30)
@@ -545,11 +570,14 @@ export async function verifyMediaLibrary(app, page, output) {
     await expect(page.locator('.media-detail h2')).toHaveText('测试影片 ABC-123')
     await expect(page.locator('.media-file-size')).toHaveText('文件大小0.00 GiB')
     await page.locator('.media-more-actions > summary').click()
-    await expect(page.getByLabel('选择媒体版本').locator('option')).toHaveCount(2)
-    await expect(page.getByLabel('选择媒体版本').locator('option')).toHaveText([
-      '版本 1 · 0.00 GiB',
-      '版本 2 · 0.00 GiB',
-    ])
+    await page.getByRole('button', { name: '选择媒体版本', exact: true }).click()
+    await expect(
+      page.getByRole('listbox', { name: '选择媒体版本', exact: true }).getByRole('option'),
+    ).toHaveCount(2)
+    await expect(
+      page.getByRole('listbox', { name: '选择媒体版本', exact: true }).getByRole('option'),
+    ).toHaveText(['版本 1 · 0.00 GiB', '版本 2 · 0.00 GiB'])
+    await page.keyboard.press('Escape')
     await expect(page.getByRole('region', { name: '影片信息' })).toBeVisible()
     await expect(page.getByRole('button', { name: '剧情', exact: true })).toBeVisible()
     await expect(page.locator('.media-info-section summary')).toHaveCount(0)
@@ -671,7 +699,7 @@ export async function verifyMediaLibrary(app, page, output) {
     await video.evaluate((element) => {
       element.currentTime = 0
     })
-    await expect(page.locator('.media-player-subtitle-hint')).toHaveText('首条字幕 0:30')
+    await expect(player.getByText(/首条字幕|正在加载字幕|正在重试字幕/)).toHaveCount(0)
     await expect(page.locator('.media-player-subtitles')).toHaveCount(0)
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1060, 760))
     await expect(page.getByRole('button', { name: '全屏', exact: true })).toBeInViewport()
@@ -751,7 +779,9 @@ export async function verifyMediaLibrary(app, page, output) {
     await run('播放视频')
     await expect(page.getByRole('button', { name: '重试字幕' })).toBeVisible()
     await run('重试字幕')
-    await expect(page.locator('.media-player-subtitle-hint')).toHaveText('首条字幕 0:30')
+    await expect
+      .poll(() => video.locator('track').evaluate((element) => element.readyState))
+      .toBe(2)
     await expect(page.getByRole('button', { name: '重试字幕' })).toHaveCount(0)
     await run('返回详情')
     await page.evaluate(async () => {
@@ -783,7 +813,11 @@ export async function verifyMediaLibrary(app, page, output) {
     await expect(page.locator('.media-chapter-image')).toContainText(['预览已隐藏', '预览已隐藏'])
     await run('显示所有封面')
     await page.locator('.media-more-actions > summary').click()
-    await page.getByLabel('选择媒体版本').selectOption('source2')
+    await page.getByRole('button', { name: '选择媒体版本', exact: true }).click()
+    await page
+      .getByRole('listbox', { name: '选择媒体版本', exact: true })
+      .getByRole('option', { name: /^版本 2/ })
+      .click()
     await page.locator('.media-detail h2').click()
     await run('播放视频')
     await expect
@@ -798,8 +832,14 @@ export async function verifyMediaLibrary(app, page, output) {
     await player.focus()
     await page.keyboard.press('Escape')
     await page.locator('.media-more-actions > summary').click()
-    await expect(page.getByLabel('选择媒体版本')).toHaveValue('source2')
-    await page.getByLabel('选择媒体版本').selectOption('source1')
+    await expect(page.getByRole('button', { name: '选择媒体版本', exact: true })).toContainText(
+      '版本 2',
+    )
+    await page.getByRole('button', { name: '选择媒体版本', exact: true }).click()
+    await page
+      .getByRole('listbox', { name: '选择媒体版本', exact: true })
+      .getByRole('option', { name: /^版本 1/ })
+      .click()
     await page.locator('.media-detail h2').click()
 
     // 直接解码失败后转码；15 秒跳转沿用章节的绝对时间。
@@ -934,7 +974,7 @@ export async function verifyMediaLibrary(app, page, output) {
         scale: 'css',
       })
     }
-    await run('跟随系统')
+    await run('钢铁侠主题')
     const jobs = await page.evaluate(() => window.cyberHorse.getMediaDownloads())
     expect(await readFile(jobs.at(-1).path)).toEqual(payload)
     await run('EMBY媒体库')
@@ -1013,11 +1053,11 @@ export async function verifyMediaLibrary(app, page, output) {
     await expect(relatedContext.getByRole('button', { name: '下载' })).toBeEnabled()
     await page.keyboard.press('Escape')
     await expect(page.locator('.nav-count')).toHaveText('1')
-    expect(await page.evaluate(() => window.cyberHorse.getMediaQueueSummary())).toEqual({
+    expect(await page.evaluate(() => window.cyberHorse.getMediaQueueSummary())).toMatchObject({
       active: 1,
     })
     await run('任务队列')
-    await expect(page.locator('.media-download-task')).toContainText('视频破解', {
+    await expect(page.locator('.workspace-task-card')).toContainText('视频破解', {
       timeout: 30000,
     })
     await expect(page.locator('.task-bottom')).toContainText('正在运行')
@@ -1025,7 +1065,7 @@ export async function verifyMediaLibrary(app, page, output) {
       'value',
       '42',
     )
-    await expect(page.locator('.media-download-task')).toContainText('已完成 0/1 个文件')
+    await expect(page.locator('.workspace-task-card')).toContainText('已完成 0/1 个文件')
     await run('展开运行日志')
     await expect(page.getByRole('log', { name: '运行日志' })).toContainText(
       '媒体库 · 测试影片 ABC-123',
@@ -1040,12 +1080,13 @@ export async function verifyMediaLibrary(app, page, output) {
         scale: 'css',
       })
     }
-    await run('跟随系统')
+    await run('钢铁侠主题')
     await unlink(progressMarker)
     await page.getByRole('tab', { name: /^已完成/ }).click()
-    await expect(
-      page.locator('.media-download-task').filter({ hasText: '视频破解' }),
-    ).toContainText('媒体处理与回写完成', { timeout: 45000 })
+    await expect(page.locator('.workspace-task-card').filter({ hasText: 'ABC-123' })).toContainText(
+      '所选步骤、发布与清理已完成',
+      { timeout: 45000 },
+    )
     const processes = await page.evaluate(() => window.cyberHorse.getMediaProcesses())
     expect(processes[0].status).toBe('completed')
     await app.evaluate(({ shell }) => {
@@ -1057,19 +1098,17 @@ export async function verifyMediaLibrary(app, page, output) {
         return globalThis.failExecutionRecordOpen ? '测试打开失败' : ''
       }
     })
-    const completedProcess = page.locator('.media-download-task').filter({ hasText: '视频破解' })
+    const completedProcess = page.locator('.workspace-task-card').filter({ hasText: 'ABC-123' })
     await completedProcess.locator(':scope > details > summary').click()
-    await completedProcess.locator('.queue-records > summary').click()
     const recordLink = completedProcess.getByRole('button', { name: '打开执行记录与日志' })
     await recordLink.click()
     await expect.poll(() => app.evaluate(() => globalThis.openedExecutionRecords.length)).toBe(1)
     await expect(recordLink).toBeEnabled()
     const openedRecord = await app.evaluate(() => globalThis.openedExecutionRecords[0])
     const recordText = await readFile(openedRecord, 'utf8')
-    expect(recordText).toContain(processes[0].id)
+    expect(recordText).toContain(processes[0].workspaceTaskId)
     expect(recordText).toContain('【执行日志】')
-    expect(recordText).toContain('正在下载并校验所选媒体版本')
-    expect(recordText).toContain('【关联处理执行事件】')
+    expect(recordText).toContain('任务状态')
     expect(recordText).toContain('MDC ·')
     await app.evaluate(() => {
       globalThis.failExecutionRecordOpen = true
@@ -1104,7 +1143,7 @@ export async function verifyMediaLibrary(app, page, output) {
         scale: 'css',
       })
     }
-    await run('跟随系统')
+    await run('钢铁侠主题')
     await app.evaluate(({ shell }) => {
       shell.openPath = globalThis.previousRecordOpenPath
     })
@@ -1169,7 +1208,7 @@ export async function verifyMediaLibrary(app, page, output) {
     await expect
       .poll(() => page.locator('.media-scroll').evaluate((element) => element.scrollTop))
       .toBeLessThan(verticalBefore)
-    for (const theme of ['初号机主题', '深色模式', '浅色模式', '跟随系统']) {
+    for (const theme of ['初号机主题', '深色模式', '浅色模式', '钢铁侠主题']) {
       await run(theme)
       await page.locator('.media-scroll').evaluate((element) => {
         element.scrollTop = 0
@@ -1214,7 +1253,7 @@ export async function verifyMediaLibrary(app, page, output) {
     expect(deleted.size).toBe(0)
     deletionTitle =
       'ABC-123 ' + '用于验证长标题换行与媒体删除确认弹窗边界的隔离测试影片。'.repeat(10)
-    for (const theme of ['初号机主题', '深色模式', '浅色模式', '跟随系统']) {
+    for (const theme of ['初号机主题', '深色模式', '浅色模式', '钢铁侠主题']) {
       await page.getByRole('button', { name: theme, exact: true }).click()
       for (const size of ['默认', '最小', '最大化']) {
         await app.evaluate(({ BrowserWindow }, size) => {

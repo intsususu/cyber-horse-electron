@@ -1,6 +1,8 @@
 import { z } from 'zod'
+import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { extname, isAbsolute } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { Settings } from '../../shared/contracts'
 import type {
   LibraryPage,
@@ -10,10 +12,20 @@ import type {
   MediaChapter,
   MediaQuery,
   MediaLinkTarget,
+  MediaPublicationRequest,
+  MediaPublicationCheck,
 } from '../../shared/media-library'
 import { mediaIdSchema } from '../../shared/media-library'
 import { embyDetailUrl, javbusDetailUrl, mediaCatalogNumber } from '../../shared/media-links'
 import { fileStamp } from './safe-files'
+import type { PopularScan, PopularLibraryVideo } from '../../shared/media-popular'
+import {
+  mediaUserDataSchema,
+  mediaUserDataSnapshotSchema,
+  mergeMediaUserData,
+  containsMediaUserData,
+  type MediaUserDataSnapshot,
+} from '../../shared/media-user-data'
 
 const text = z
   .string()
@@ -36,7 +48,14 @@ const itemSchema = z.object({
   CollectionType: text,
   DateCreated: text,
   Path: text,
-  UserData: z.object({ IsFavorite: z.boolean().optional(), FavoriteDate: text }).nullish(),
+  UserData: z
+    .object({
+      IsFavorite: z.boolean().optional(),
+      FavoriteDate: text,
+      PlayCount: number,
+      LastPlayedDate: text,
+    })
+    .nullish(),
   Genres: z.array(z.string()).nullish(),
   GenreItems: z.array(named).nullish(),
   Studios: z.array(named).nullish(),
@@ -92,6 +111,14 @@ const authHeader =
   'Emby Client="Cyber Horse", Device="Desktop", DeviceId="cyber-horse-electron", Version="0.1.0"'
 const fields =
   'Overview,MediaSources,ProductionYear,RunTimeTicks,DateCreated,Path,Genres,Studios,People,Chapters'
+class EmbyRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+  }
+}
 const video = (item: Item): LibraryVideo => ({
   id: item.Id,
   name: item.Name || '未命名视频',
@@ -140,7 +167,7 @@ export class EmbyClient {
           throw new Error('Emby 认证已失效，请检查账号密码后重试。')
         }
         if (response.status === 403) throw new Error('当前 Emby 账号没有此操作权限。')
-        if (response.status === 404) throw new Error('媒体项目不存在或已被移除。')
+        if (response.status === 404) throw new EmbyRequestError('媒体项目不存在或已被移除。', 404)
         throw new Error(`Emby 请求失败（状态码 ${response.status}）。`)
       }
       return response
@@ -249,12 +276,21 @@ export class EmbyClient {
     method = 'GET',
     signal?: AbortSignal,
     timeoutMs: number | null = 20000,
+    body?: unknown,
   ) {
     const url = new URL(path, session.url)
     url.search = new URLSearchParams(query).toString()
     return this.response(
       url.href,
-      { method, headers: { Authorization: authHeader, 'X-Emby-Token': session.token } },
+      {
+        method,
+        headers: {
+          Authorization: authHeader,
+          'X-Emby-Token': session.token,
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      },
       AbortSignal.any([
         session.signal,
         ...(timeoutMs === null ? [] : [AbortSignal.timeout(timeoutMs)]),
@@ -276,10 +312,159 @@ export class EmbyClient {
       collectionType: item.CollectionType,
     }))
   }
+  async popularIdentity() {
+    const session = await this.authenticate()
+    session.signal.throwIfAborted()
+    return createHash('sha256')
+      .update(JSON.stringify([session.url, session.serverId, session.userId]))
+      .digest('hex')
+  }
+  async scanPopular(
+    signal: AbortSignal,
+    progress: (message: string) => void,
+  ): Promise<PopularScan> {
+    const session = await this.authenticate()
+    const scanItem = z.object({
+      Id: id,
+      Name: text,
+      UserData: z
+        .object({
+          PlayCount: z.number().int().nonnegative().optional(),
+          IsFavorite: z.boolean().optional(),
+        })
+        .nullish(),
+      People: z.array(named.extend({ Type: text })).nullish(),
+    })
+    const schema = z.object({
+      Items: z.array(scanItem),
+      TotalRecordCount: z.number().int().nonnegative().optional(),
+    })
+    const all = async (params: Record<string, string>, label: string) => {
+      const result = new Map<string, z.infer<typeof scanItem>>()
+      let start = 0
+      let expected: number | undefined
+      while (true) {
+        signal.throwIfAborted()
+        const response = await this.request(
+          session,
+          `Users/${session.userId}/Items`,
+          {
+            Recursive: 'true',
+            GroupItemsIntoCollections: 'false',
+            EnableUserData: 'true',
+            Fields: 'People,UserDataPlayCount,UserDataLastPlayedDate',
+            SortBy: 'SortName',
+            SortOrder: 'Ascending',
+            ...params,
+            StartIndex: String(start),
+            Limit: '500',
+          },
+          'GET',
+          signal,
+        )
+        const parsed = schema.safeParse(await this.json(response))
+        if (!parsed.success)
+          throw new Error('热门扫描响应无效或未返回累计播放字段，请检查 Emby 版本。')
+        const page = parsed.data
+        if (
+          expected !== undefined &&
+          page.TotalRecordCount !== undefined &&
+          expected !== page.TotalRecordCount
+        )
+          throw new Error('扫描期间媒体数量发生变化，请稍后重新更新。')
+        expected = page.TotalRecordCount
+        const before = result.size
+        for (const item of page.Items) result.set(item.Id, item)
+        start += page.Items.length
+        progress(`${label}：已读取 ${result.size} 项`)
+        if (start > 200000) throw new Error('媒体数量超过单次扫描上限。')
+        if (page.Items.length && result.size === before)
+          throw new Error('Emby 分页重复，已停止扫描以保留原榜单。')
+        if (expected !== undefined && start >= expected) break
+        if (page.Items.length === 0) {
+          if (expected !== undefined && start < expected)
+            throw new Error('Emby 分页不完整，请重试。')
+          break
+        }
+        if (expected === undefined && page.Items.length < 500) break
+      }
+      if (expected !== undefined && result.size !== expected)
+        throw new Error('Emby 分页存在重复或遗漏，请重试。')
+      return [...result.values()]
+    }
+    const items = await all({ IncludeItemTypes: 'Movie,Video' }, '正在读取影片')
+    if (
+      items.some(
+        (item) => item.UserData?.PlayCount === undefined || item.UserData.IsFavorite === undefined,
+      )
+    )
+      throw new Error('Emby 未返回当前账号的播放与收藏数据，未替换原榜单。')
+    const videos = items.map((item) => ({
+      id: item.Id,
+      plays: item.UserData!.PlayCount!,
+      favorite: item.UserData!.IsFavorite!,
+      people: (item.People ?? [])
+        .filter((person) => person.Type.toLowerCase() === 'actor' && person.Id && person.Name)
+        .map((person) => ({ id: person.Id!, name: person.Name })),
+    }))
+    const available = new Set(videos.map((item) => item.id))
+    const collections = await all(
+      { IncludeItemTypes: 'BoxSet', Fields: '', EnableUserData: 'false' },
+      '正在读取系列',
+    )
+    const series: PopularScan['series'] = []
+    for (const [index, collection] of collections.entries()) {
+      const members = await all(
+        {
+          IncludeItemTypes: 'Movie,Video',
+          ParentId: collection.Id,
+          Fields: '',
+          EnableUserData: 'false',
+        },
+        `正在归组系列 ${index + 1}/${collections.length}`,
+      )
+      const videoIds = members.map((item) => item.Id).filter((itemId) => available.has(itemId))
+      if (videoIds.length)
+        series.push({ id: collection.Id, name: collection.Name || '未命名系列', videoIds })
+    }
+    session.signal.throwIfAborted()
+    signal.throwIfAborted()
+    return { videos, series }
+  }
+  async videosByIds(ids: string[]): Promise<PopularLibraryVideo[]> {
+    if (!ids.length) return []
+    const session = await this.authenticate()
+    const items = new Map<string, PopularLibraryVideo>()
+    for (let start = 0; start < ids.length; start += 100) {
+      const batch = ids.slice(start, start + 100)
+      const data = this.parsePage(
+        await this.json(
+          await this.request(session, `Users/${session.userId}/Items`, {
+            Ids: batch.join(','),
+            IncludeItemTypes: 'Movie,Video',
+            Recursive: 'true',
+            GroupItemsIntoCollections: 'false',
+            Fields:
+              'ProductionYear,RunTimeTicks,DateCreated,UserDataPlayCount,UserDataLastPlayedDate',
+            EnableUserData: 'true',
+            Limit: String(batch.length),
+          }),
+        ),
+      )
+      session.signal.throwIfAborted()
+      for (const item of data.Items)
+        items.set(item.Id, {
+          ...video(item),
+          playCount: item.UserData?.PlayCount ?? null,
+          created: item.DateCreated,
+          lastPlayed: item.UserData?.LastPlayedDate ?? '',
+        })
+    }
+    return ids.flatMap((itemId) => (items.has(itemId) ? [items.get(itemId)!] : []))
+  }
   async page(query: MediaQuery): Promise<LibraryPage> {
     const s = await this.authenticate()
     const params: Record<string, string> = {
-      ParentId: query.libraryId,
       Recursive: 'true',
       IncludeItemTypes: 'Movie,Video,Episode',
       Fields: fields,
@@ -289,6 +474,7 @@ export class EmbyClient {
       StartIndex: String(query.start),
       Limit: String(query.limit),
     }
+    if (query.libraryId) params.ParentId = query.libraryId
     if (query.favorites) params.IsFavorite = 'true'
     if (query.filter) {
       const { kind, id, name } = query.filter
@@ -474,7 +660,8 @@ export class EmbyClient {
     this.titleSearchCache = undefined
     return favorite
   }
-  async refresh(itemId: string, expectedGeneration?: number) {
+  async refresh(itemId: string, expectedGeneration?: number, signal?: AbortSignal) {
+    signal?.throwIfAborted()
     const s = await this.authenticate()
     if (expectedGeneration !== undefined && expectedGeneration !== this.revision)
       throw new Error('媒体服务器连接已变化，未向新连接提交刷新。')
@@ -489,9 +676,243 @@ export class EmbyClient {
         ReplaceAllMetadata: 'false',
       },
       'POST',
+      signal,
     )
     await response.body?.cancel()
     this.titleSearchCache = undefined
+  }
+
+  /** 刷新提交不代表已入库；按服务器路径重新发现，允许改名后的新项目 ID。 */
+  async serverIdentity() {
+    const session = await this.authenticate()
+    return createHash('sha256').update(session.serverId).digest('hex')
+  }
+
+  async confirmPublished(request: MediaPublicationRequest, signal: AbortSignal): Promise<boolean> {
+    return (await this.inspectPublished(request, signal)).state === 'confirmed'
+  }
+
+  private userDataIdentity(session: Session) {
+    if (!session.serverId) throw new Error('Emby 未返回服务器身份，无法安全保存或迁移观看记录。')
+    return createHash('sha256')
+      .update(JSON.stringify([session.url, session.serverId, session.userId]))
+      .digest('hex')
+  }
+
+  private async readUserData(session: Session, itemId: string, signal: AbortSignal) {
+    signal.throwIfAborted()
+    const result = z.object({ Id: id, UserData: mediaUserDataSchema }).safeParse(
+      await this.json(
+        await this.request(
+          session,
+          `Users/${session.userId}/Items/${itemId}`,
+          {
+            EnableUserData: 'true',
+            Fields: 'UserDataPlayCount,UserDataLastPlayedDate,UserDataPlaybackPositionTicks',
+          },
+          'GET',
+          signal,
+        ),
+      ),
+    )
+    if (!result.success || result.data.Id !== itemId)
+      throw new Error('Emby 未返回完整的收藏和观看记录，已停止迁移；不会将缺失数据当作零。')
+    session.signal.throwIfAborted()
+    signal.throwIfAborted()
+    return result.data.UserData
+  }
+
+  async captureUserData(itemId: string, signal: AbortSignal): Promise<MediaUserDataSnapshot> {
+    mediaIdSchema.parse(itemId)
+    signal.throwIfAborted()
+    const session = await this.authenticate()
+    const identity = this.userDataIdentity(session)
+    const data = await this.readUserData(session, itemId, signal)
+    return { identity, itemId, capturedAt: new Date().toISOString(), data }
+  }
+
+  private async restoreUserData(
+    itemId: string,
+    snapshot: MediaUserDataSnapshot,
+    signal: AbortSignal,
+  ) {
+    const session = await this.authenticate()
+    if (this.userDataIdentity(session) !== snapshot.identity)
+      throw new Error('Emby 服务器或账号身份已变化，未迁移收藏和观看记录。')
+    // 原 ID 保留时用户记录仍属于原条目，不用旧快照覆盖用户的新操作。
+    if (itemId === snapshot.itemId) return
+    const current = await this.readUserData(session, itemId, signal)
+    const expected = mergeMediaUserData(snapshot.data, current)
+    if (containsMediaUserData(current, expected)) return
+    let actual = current
+    if (!containsMediaUserData(current, { ...expected, IsFavorite: current.IsFavorite })) {
+      const response = await this.request(
+        session,
+        `Users/${session.userId}/Items/${itemId}/UserData`,
+        {},
+        'POST',
+        signal,
+        20000,
+        { ...expected, ItemId: itemId },
+      )
+      await response.body?.cancel()
+      this.titleSearchCache = undefined
+      actual = await this.readUserData(session, itemId, signal)
+    }
+    // 部分 Emby 版本的 UserData 写回忽略收藏，须使用专用接口并再次读取核对。
+    if (expected.IsFavorite && !actual.IsFavorite) {
+      const response = await this.request(
+        session,
+        `Users/${session.userId}/FavoriteItems/${itemId}`,
+        {},
+        'POST',
+        signal,
+      )
+      await response.body?.cancel()
+      this.titleSearchCache = undefined
+      actual = await this.readUserData(session, itemId, signal)
+    }
+    if (!containsMediaUserData(actual, expected))
+      throw new Error('Emby 收藏和观看记录写回后未通过核对；任务已保留，可仅重试同步。')
+  }
+
+  /** 按完整服务器路径精确查找，改名后的 ID 不依赖旧 ID；不扫描或下载媒体内容。 */
+  async inspectPublished(
+    request: MediaPublicationRequest,
+    signal: AbortSignal,
+  ): Promise<MediaPublicationCheck> {
+    signal.throwIfAborted()
+    const session = await this.authenticate()
+    const normalize = (path: string) => {
+      const slashes = path.replace(/\\/g, '/').replace(/\/+$/, '')
+      return /^[A-Za-z]:\//.test(slashes) ? slashes.toLowerCase() : slashes
+    }
+    const data = this.parsePage(
+      await this.json(
+        await this.request(
+          session,
+          'Items',
+          {
+            UserId: session.userId,
+            Path: request.path,
+            Recursive: 'true',
+            IncludeItemTypes: 'Movie,Video,Episode',
+            Fields: 'Path,MediaSources',
+            Limit: '2',
+          },
+          'GET',
+          signal,
+        ),
+      ),
+    )
+    if (data.Items.length > 1 || (data.TotalRecordCount ?? 0) > 1)
+      return {
+        state: 'ambiguous',
+        itemId: null,
+        message: 'Emby 按发布路径返回多个项目，未自动认领。',
+      }
+    const candidate = data.Items[0]
+    if (
+      !candidate ||
+      !(
+        normalize(candidate.Path) === normalize(request.path) ||
+        candidate.MediaSources?.some((source) => normalize(source.Path) === normalize(request.path))
+      )
+    )
+      return { state: 'not-found', itemId: null, message: 'Emby 尚未返回新文件路径对应的项目。' }
+    const item = itemSchema.parse(
+      await this.json(
+        await this.request(
+          session,
+          `Users/${session.userId}/Items/${candidate.Id}`,
+          { Fields: 'Path,MediaSources,MediaStreams' },
+          'GET',
+          signal,
+        ),
+      ),
+    )
+    const sources = (item.MediaSources ?? []).filter(
+      (source) => normalize(source.Path) === normalize(request.path),
+    )
+    const source = sources.find((value) => value.Size === request.size)
+    if (!source)
+      return {
+        state: 'size-mismatch',
+        itemId: candidate.Id,
+        message: 'Emby 已找到项目，但视频路径或大小尚未与发布结果一致。',
+      }
+    if (
+      request.chinese &&
+      !source.MediaStreams?.some(
+        (stream) =>
+          stream.Type.toLowerCase() === 'subtitle' && /^(chi|zho|zh)(?:$|-)/i.test(stream.Language),
+      )
+    )
+      return {
+        state: 'subtitle-missing',
+        itemId: candidate.Id,
+        message: 'Emby 已找到新视频，但尚未确认所需中文字幕轨。',
+      }
+    signal.throwIfAborted()
+    session.signal.throwIfAborted()
+    return {
+      state: 'confirmed',
+      itemId: candidate.Id,
+      message: 'Emby 已核对发布视频的路径、大小及所需字幕。',
+    }
+  }
+
+  /** 先确认媒体，再迁移已保存的用户记录；无快照的历史调用仍只确认媒体。 */
+  async synchronizePublished(
+    request: MediaPublicationRequest,
+    signal: AbortSignal,
+    userData?: MediaUserDataSnapshot,
+  ): Promise<boolean> {
+    const timeout = AbortSignal.timeout(180000)
+    const verification = AbortSignal.any([signal, timeout])
+    let lastIssue = ''
+    try {
+      verification.throwIfAborted()
+      if (userData) {
+        userData = mediaUserDataSnapshotSchema.parse(userData)
+        if (userData.itemId !== request.itemId)
+          throw new Error('收藏和观看记录不属于本次原条目，未迁移。')
+        const session = await this.authenticate()
+        if (this.userDataIdentity(session) !== userData.identity)
+          throw new Error('Emby 服务器或账号身份已变化，未迁移收藏和观看记录。')
+      }
+      const complete = async (itemId: string | null) => {
+        if (!itemId) throw new Error('Emby 未返回已确认的项目标识。')
+        lastIssue = ''
+        if (userData) await this.restoreUserData(itemId, userData, verification)
+        return true
+      }
+      let result = await this.inspectPublished(request, verification)
+      if (result.state === 'confirmed') return await complete(result.itemId)
+      if (result.state === 'ambiguous') throw new Error(result.message)
+      lastIssue = result.message
+      const generation = this.generation
+      try {
+        await this.refresh(result.itemId ?? request.itemId, generation, verification)
+      } catch (error) {
+        // 旧 ID 因文件改名消失是预期情况；其他刷新错误必须保留具体原因。
+        if (!(error instanceof EmbyRequestError && error.status === 404 && !result.itemId))
+          throw error
+      }
+      // 入库速度由服务器决定；持续核对至整体期限，不在约六秒时提前结束。
+      while (true) {
+        await delay(3000, undefined, { signal: verification })
+        result = await this.inspectPublished(request, verification)
+        if (result.state === 'confirmed') return await complete(result.itemId)
+        if (result.state === 'ambiguous') throw new Error(result.message)
+        lastIssue = result.message
+      }
+    } catch (error) {
+      if (signal.aborted) throw new Error('收尾确认已取消；媒体已回写，任务记录已保留。')
+      if (timeout.aborted) throw new Error(`Emby 更新确认超过 3 分钟，可重试收尾。${lastIssue}`)
+      if (error instanceof Error && /[\u4e00-\u9fff]/.test(error.message)) throw error
+      throw new Error('Emby 更新确认请求中断，可重试收尾。')
+    }
   }
   async delete(itemId: string, expectedGeneration?: number) {
     const s = await this.authenticate()

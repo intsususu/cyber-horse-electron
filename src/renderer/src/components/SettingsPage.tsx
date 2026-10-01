@@ -12,6 +12,8 @@ import { pathLabels } from '../data/catalog'
 import type { Workspace } from '../hooks/use-workspace'
 import { reconcileSettingsDraft } from '../lib/settings-draft'
 import { settingsSaveError } from '../lib/settings-errors'
+import { SubtitleSettings } from './SubtitleSettings'
+import { subtitleStyleSchema } from '../../../shared/subtitle-style'
 
 const tabs = [
   ['paths', '路径与工具'],
@@ -31,6 +33,8 @@ export function SettingsPage({ workspace, target }: { workspace: Workspace; targ
   const [saving, setSaving] = useState(false)
   const [opening, setOpening] = useState(false)
   const [saveError, setSaveError] = useState('')
+  const [previewTarget, setPreviewTarget] = useState<HTMLDivElement | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
   useEffect(() => {
     if (target) {
       const input = document.getElementById(`path-${target}`)
@@ -90,6 +94,13 @@ export function SettingsPage({ workspace, target }: { workspace: Workspace; targ
   }
 
   async function save() {
+    if (!subtitleStyleSchema.strip().safeParse(draft.subtitle).success) {
+      setSaveError(
+        '请检查字幕样式：字体名称不能为空或包含逗号、引号；字号为 16–120，描边与阴影为 0–8，底部边距为 0–200。',
+      )
+      setTab('subtitle')
+      return
+    }
     const previous = baseline.current
     setSaving(true)
     setSaveError('')
@@ -139,8 +150,11 @@ export function SettingsPage({ workspace, target }: { workspace: Workspace; targ
   }
 
   return (
-    <div className="workspace-body settings-page">
-      <section className="panel settings-section preference-panel">
+    <div
+      ref={setPreviewTarget}
+      className={`workspace-body settings-page ${previewOpen ? 'is-previewing' : ''}`}
+    >
+      <section className="panel settings-section preference-panel" inert={previewOpen}>
         <div className="preference-tabs" role="tablist" aria-label="配置分类">
           {tabs.map(([key, label], index) => (
             <button
@@ -237,24 +251,12 @@ export function SettingsPage({ workspace, target }: { workspace: Workspace; targ
             </div>
           )}
           {tab === 'subtitle' && (
-            <div className="preference-group">
-              <h2>字幕格式</h2>
-              <div className="segmented-options" role="group" aria-label="字幕格式">
-                {(['srt', 'ass'] as const).map((format) => (
-                  <button
-                    key={format}
-                    className={draft.subtitle.format === format ? 'selected' : ''}
-                    aria-pressed={draft.subtitle.format === format}
-                    onClick={() => setDraft((current) => ({ ...current, subtitle: { format } }))}
-                  >
-                    {format.toUpperCase()}
-                  </button>
-                ))}
-              </div>
-              <p className="preference-hint subtitle-hint">
-                工作台“字幕与封装”按此格式保存字幕，并封装到视频中。
-              </p>
-            </div>
+            <SubtitleSettings
+              previewTarget={previewTarget}
+              onPreviewOpenChange={setPreviewOpen}
+              value={draft.subtitle}
+              onChange={(subtitle) => setDraft((current) => ({ ...current, subtitle }))}
+            />
           )}
           {tab === 'server' && (
             <>
@@ -409,7 +411,7 @@ export function SettingsPage({ workspace, target }: { workspace: Workspace; targ
           )}
         </div>
       </section>
-      <div className="panel settings-save">
+      <div className="panel settings-save" inert={previewOpen}>
         <div className="save-context" title={configLocation || undefined}>
           {workspace.configWarning || saveError ? (
             <p className="config-error" role="alert">

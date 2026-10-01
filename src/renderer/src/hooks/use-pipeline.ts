@@ -137,6 +137,7 @@ export function usePipeline(
     preview,
     confirm,
     cancel,
+    reload: async () => apply(await window.cyberHorse!.getPipelineState()),
     close: () => {
       if (!lock.current) {
         setPlan(null)

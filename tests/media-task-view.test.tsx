@@ -9,6 +9,12 @@ import { TaskDuration, TaskTiming } from '../src/renderer/src/components/TaskTim
 import { taskDuration } from '../src/renderer/src/lib/task-time'
 import { buildTaskQueue, queueGroups, queueTab } from '../src/renderer/src/lib/task-queue'
 import type { DemoTask } from '../src/renderer/src/lib/workflow'
+import type { TaskView } from '../src/shared/task-workspace'
+import { workspaceTaskDownload } from '../src/renderer/src/lib/task-queue'
+import {
+  WorkspaceTaskCard,
+  workspaceTaskTab,
+} from '../src/renderer/src/components/WorkspaceTaskCard'
 
 const download: MediaDownload = {
   id: 'download-1',
@@ -66,6 +72,124 @@ const process: MediaProcessState = {
 }
 
 describe('媒体库复合任务视图', () => {
+  const workspaceView = (): TaskView => ({
+    task: {
+      version: 1,
+      revision: 0,
+      updatedAt: '2026-09-28T10:03:00.000Z',
+      downloadRoot: 'C:/测试',
+      workspaceName: '任务',
+      steps: ['archive'],
+      message: '处理完成。',
+      id: 'workspace-1',
+      name: 'CLUB-388_1个文件',
+      origin: 'media-library',
+      createdAt: '2026-09-28T10:02:00.000Z',
+      state: 'completed',
+      context: null,
+      destination: { kind: 'media-original', root: 'C:/NAS' },
+      files: [
+        {
+          id: 'file-1',
+          name: '影片.mp4',
+          directory: '文件',
+          number: null,
+          artifacts: [],
+          marks: {
+            chinese: { present: false, evidence: 'none' },
+            restored: { present: false, evidence: 'none' },
+          },
+          sources: [
+            {
+              path: download.path,
+              copy: false,
+              stamp: { size: 1024, mtimeMs: 0, ctimeMs: 0, ino: 1, dev: 1 },
+              target: '文件/影片.mp4',
+              state: 'claimed',
+            },
+          ],
+          steps: [],
+          publications: [],
+        },
+      ],
+    },
+    directory: '',
+    active: false,
+    recoverable: false,
+    diagnostic: '',
+  })
+
+  it('重启后复合记录丢失时，旧任务按完整来源合并下载并保留原影片标题与下载详情', () => {
+    const view = workspaceView()
+    expect(buildTaskQueue([], [download], [], [view])).toEqual([])
+    const matched = workspaceTaskDownload(view, [download])
+    const html = renderToStaticMarkup(
+      <WorkspaceTaskCard
+        view={view}
+        download={matched}
+        busy={false}
+        act={() => {}}
+        open={() => {}}
+        cancel={() => {}}
+      />,
+    )
+    expect(html).toContain('测试影片')
+    expect(html).not.toContain('CLUB-388_1个文件')
+    expect(html).toContain('下载：')
+    expect(html.match(/<article/g)).toHaveLength(1)
+  })
+  it('新任务持久化下载 ID，改路径或同名记录也只关联对应下载', () => {
+    const view = workspaceView()
+    view.task.context = {
+      configuration: '',
+      replacements: [],
+      sync: null,
+      media: { processId: process.id, downloadId: download.id, name: '原影片名称' },
+    }
+    const independent = { ...download, id: 'independent', path: 'C:/另一份/影片.mp4' }
+    expect(
+      buildTaskQueue(
+        [],
+        [download, independent],
+        [{ ...process, workspaceTaskId: view.task.id }],
+        [view],
+      ).map((entry) => entry.task.id),
+    ).toEqual(['independent'])
+    expect(workspaceTaskDownload(view, [{ ...download, path: 'C:/迁移/影片.mp4' }])?.id).toBe(
+      download.id,
+    )
+  })
+  it('永久删除后不进入任何分组，关联下载和处理记录也不重新出现', () => {
+    const view = workspaceView()
+    view.task.state = 'removed'
+    view.task.removalAction = 'delete'
+    expect(workspaceTaskTab(view)).toBeNull()
+    expect(
+      buildTaskQueue([], [download], [{ ...process, workspaceTaskId: view.task.id }], [view]),
+    ).toEqual([])
+    view.recoverable = true
+    view.directory = 'C:/测试/.work/任务'
+    expect(workspaceTaskTab(view)).toBe('unfinished')
+    view.active = true
+    expect(workspaceTaskTab(view)).toBe('active')
+  })
+  it('兼容旧删除记录，保留文件的记录仍可查看', () => {
+    const view = workspaceView()
+    view.task.state = 'removed'
+    view.task.message = '任务内已识别文件已按用户确认永久删除。'
+    expect(workspaceTaskTab(view)).toBeNull()
+    view.task.removalAction = 'keep'
+    expect(workspaceTaskTab(view)).toBe('completed')
+  })
+  it('同名独立下载、较晚下载和有歧义的旧路径不被误合并', () => {
+    const view = workspaceView()
+    for (const jobs of [
+      [{ ...download, path: 'C:/其他/影片.mp4' }],
+      [{ ...download, ended: '2026-09-29T10:01:00.000Z' }],
+      [download, { ...download, id: 'duplicate' }],
+    ])
+      expect(buildTaskQueue([], jobs, [], [view])).toHaveLength(jobs.length)
+  })
   it('只在主视图展开当前步骤，等待和已结束的步骤放入详情', () => {
     const html = renderToStaticMarkup(
       <MediaProcessTask

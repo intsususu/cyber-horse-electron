@@ -35,14 +35,14 @@ export async function verifyPreparation(app, page, output) {
     await page.getByRole('button', { name: '工作台', exact: true }).click()
     await expect(page.locator('.directory-trigger')).toHaveAttribute('title', preprocess)
     await expect(page.locator('.input-selection-status')).toContainText('2 个视频')
-    for (const theme of ['初号机', '深色', '浅色', '跟随系统']) {
+    for (const theme of ['初号机', '深色', '浅色', '钢铁侠主题']) {
       await page
         .getByRole('button', {
-          name: theme === '初号机' ? '初号机主题' : theme === '跟随系统' ? theme : `${theme}模式`,
+          name: theme === '初号机' ? '初号机主题' : theme === '钢铁侠主题' ? theme : `${theme}模式`,
           exact: true,
         })
         .click()
-      await page.getByRole('button', { name: '开始预处理', exact: true }).click()
+      await page.getByRole('button', { name: '文件预处理', exact: true }).click()
       const preview = page.getByRole('dialog', { name: '预处理清单' })
       await expect(preview).toContainText(
         '提取 1 项 · 重命名 1 项 · 删除残留 2 项 · 清理空文件夹 2 项',
@@ -56,7 +56,7 @@ export async function verifyPreparation(app, page, output) {
         scale: 'css',
       })
       await page.keyboard.press('Escape')
-      await expect(page.getByRole('button', { name: '开始预处理', exact: true })).toBeFocused()
+      await expect(page.getByRole('button', { name: '文件预处理', exact: true })).toBeFocused()
       expect((await stat(source)).size).toBe(1024 ** 3)
       await page.getByRole('button', { name: '偏好配置', exact: true }).click()
       await page.getByRole('button', { name: '保存配置', exact: true }).click()
@@ -70,7 +70,7 @@ export async function verifyPreparation(app, page, output) {
       await page.getByRole('button', { name: '工作台', exact: true }).click()
     }
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1060, 760))
-    await page.getByRole('button', { name: '开始预处理', exact: true }).click()
+    await page.getByRole('button', { name: '文件预处理', exact: true }).click()
     await expect(page.getByRole('button', { name: '确认执行预处理' })).toBeInViewport()
     await page.screenshot({ path: join(output, '预处理清单-最小窗口.png'), scale: 'css' })
     await page.keyboard.press('Escape')
@@ -79,7 +79,7 @@ export async function verifyPreparation(app, page, output) {
       '可恢复的下载残留',
     )
     await page.getByRole('button', { name: '最大化或还原', exact: true }).click()
-    await page.getByRole('button', { name: '开始预处理', exact: true }).click()
+    await page.getByRole('button', { name: '文件预处理', exact: true }).click()
     await expect(page.getByRole('button', { name: '确认执行预处理' })).toBeInViewport()
     await page.screenshot({ path: join(output, '预处理清单-最大化.png'), scale: 'css' })
     await page.getByRole('button', { name: '确认执行预处理' }).click()
@@ -121,7 +121,7 @@ export async function verifyPreparation(app, page, output) {
         }
       }),
     ).toBe(true)
-    await page.getByRole('button', { name: '开始预处理', exact: true }).click()
+    await page.getByRole('button', { name: '文件预处理', exact: true }).click()
     await expect(page.getByRole('dialog', { name: '预处理清单' })).toContainText(
       '没有需要处理的文件',
     )
