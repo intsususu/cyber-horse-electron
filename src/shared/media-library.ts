@@ -77,6 +77,12 @@ export type MediaSubtitle = {
   codec: string
   isText: boolean
 }
+export type MediaSubtitleFormat = 'vtt' | 'ass' | 'ssa'
+// 浏览器使用 WebVTT；VLC 保留 ASS／SSA 的字体、位置、描边和时间轴样式。
+export function nativeSubtitleFormat(codec: string): MediaSubtitleFormat {
+  const value = codec.toLowerCase()
+  return value === 'ass' || value === 'ssa' ? value : 'vtt'
+}
 export type MediaSource = MediaNamed & {
   path: string
   container: string

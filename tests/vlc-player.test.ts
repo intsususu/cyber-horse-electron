@@ -26,7 +26,7 @@ const request = () => ({
   startSeconds: 0,
   bounds,
 })
-async function fixture(machine = 0x8664) {
+async function fixture(machine = 0x8664, codec = 'srt') {
   const root = await mkdtemp(join(tmpdir(), 'horse-vlc-test-'))
   roots.push(root)
   await mkdir(join(root, 'plugins'))
@@ -43,7 +43,7 @@ async function fixture(machine = 0x8664) {
     open: vi.fn(async () => ({
       token: mediaToken,
       url: `horse://app/media-playback/${mediaToken}/stream.avi`,
-      subtitles: [{ index: 2, name: '中文', language: 'zho', codec: 'srt', isText: true }],
+      subtitles: [{ index: 2, name: '中文', language: 'zho', codec, isText: true }],
     })),
     close: vi.fn(),
     response: vi.fn(
@@ -53,7 +53,9 @@ async function fixture(machine = 0x8664) {
           headers: { 'content-type': 'video/x-msvideo', 'content-range': 'bytes 0-5/6' },
         }),
     ),
-    subtitle: vi.fn(async () => new Response('WEBVTT\n\n字幕')),
+    subtitle: vi.fn(
+      async (_token: string, _index: number, _format: string) => new Response('字幕'),
+    ),
   }
   const commands: Record<string, unknown>[] = []
   const child = new EventEmitter() as ChildProcess
@@ -200,6 +202,25 @@ describe('VLC 内嵌播放和边界保护', () => {
     f.player.control({ token: r.requestId, action: 'audio', volume: 0.5, muted: false }, window)
     expect(f.commands.at(-1)).toMatchObject({ action: 'audio', volume: 0.5, muted: false })
   })
+  for (const format of ['ass', 'ssa'])
+    it(`${format.toUpperCase()} 服务器字幕保留样式格式，只允许当前轨道对应的后缀`, async () => {
+      const f = await fixture(0x8664, format),
+        r = request()
+      await f.player.open(r, window, true)
+      await vi.waitFor(() => expect(f.player.state(r.requestId)?.status).toBe('playing'))
+      expect(
+        f.player.state(r.requestId)?.subtitles.find((track) => track.index === 100002)?.name,
+      ).toContain('保留样式')
+      f.player.control({ token: r.requestId, action: 'subtitle', index: 100002 }, window)
+      const url = f.commands.at(-1)!.url as string
+      expect(url).toMatch(new RegExp(`\\.${format}$`))
+      expect((await fetch(url)).status).toBe(200)
+      expect(f.playback.subtitle).toHaveBeenCalledWith(expect.any(String), 2, format)
+      expect((await fetch(url.replace(`.${format}`, '.vtt'))).status).toBe(403)
+      expect((await fetch(url.replace('/2.', '/3.'))).status).toBe(403)
+      expect((await fetch(url.replace(`.${format}`, '.exe'))).status).toBe(403)
+      expect(f.playback.subtitle).toHaveBeenCalledOnce()
+    })
   it('准备期间和 IPC 受理前取消都不启动进程，旧会话关闭不干扰新播放', async () => {
     const f = await fixture(),
       r = request()

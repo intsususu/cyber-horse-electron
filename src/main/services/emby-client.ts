@@ -14,6 +14,7 @@ import type {
   MediaLinkTarget,
   MediaPublicationRequest,
   MediaPublicationCheck,
+  MediaSubtitleFormat,
 } from '../../shared/media-library'
 import { mediaIdSchema } from '../../shared/media-library'
 import { embyDetailUrl, javbusDetailUrl, mediaCatalogNumber } from '../../shared/media-links'
@@ -983,29 +984,36 @@ export class EmbyClient {
     startSeconds: number,
     signal: AbortSignal,
     expectedGeneration: number,
+    format: MediaSubtitleFormat = 'vtt',
   ): Promise<Buffer> {
+    if (!['vtt', 'ass', 'ssa'].includes(format)) throw new Error('字幕格式不受支持。')
     const s = await this.authenticate()
     if (expectedGeneration !== this.revision) throw new Error('媒体服务器连接已变化，请重新播放。')
     const response = await this.request(
       s,
-      `Videos/${itemId}/${sourceId}/Subtitles/${index}/Stream.vtt`,
+      `Videos/${itemId}/${sourceId}/Subtitles/${index}/Stream.${format}`,
       startSeconds > 0 ? { StartPositionTicks: String(Math.floor(startSeconds * 10000000)) } : {},
       'GET',
       signal,
     )
     const type = response.headers.get('content-type')?.split(';')[0]?.toLowerCase()
-    if (type && !['text/vtt', 'text/plain', 'application/octet-stream'].includes(type)) {
+    const types = ['text/plain', 'application/octet-stream']
+    if (format === 'vtt') types.push('text/vtt')
+    else types.push('text/x-ass', 'text/x-ssa', 'application/x-ass', 'application/x-ssa')
+    if (type && !types.includes(type)) {
       await response.body?.cancel()
       throw new Error('服务器返回的字幕格式无效。')
     }
     const data = await this.bounded(response, 8 * 1024 * 1024)
-    if (
-      !data
-        .toString('utf8')
-        .replace(/^\uFEFF/, '')
-        .startsWith('WEBVTT')
+    const content = data.toString('utf8').replace(/^\uFEFF/, '')
+    if (format === 'vtt') {
+      if (!content.startsWith('WEBVTT')) throw new Error('服务器返回的字幕不是有效的 WebVTT。')
+    } else if (
+      !/^\s*\[Script Info\]/i.test(content) ||
+      !/^\[V4\+? Styles\]\s*$/im.test(content) ||
+      !/^\[Events\]\s*$/im.test(content)
     )
-      throw new Error('服务器返回的字幕不是有效的 WebVTT。')
+      throw new Error('服务器返回的字幕缺少 ASS／SSA 样式或事件，无法保留原字幕外观。')
     return data
   }
   async image(request: MediaImageRequest): Promise<string | null> {

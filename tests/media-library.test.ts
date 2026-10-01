@@ -127,6 +127,13 @@ async function fixture() {
         return new Response('WEBVTT\n\n00:00:00.000 --> 00:00:03.000\n中文字幕\n', {
           headers: { 'content-type': 'text/vtt' },
         })
+      if (/\/Subtitles\/2\/Stream\.(ass|ssa)$/.test(parsed.pathname))
+        return new Response(
+          mode === '样式丢失'
+            ? 'WEBVTT\n\n00:00:00.000 --> 00:00:03.000\n中文字幕\n'
+            : `[Script Info]\nScriptType: v4.00+\n[V4${parsed.pathname.endsWith('.ass') ? '+' : ''} Styles]\nFormat: Name, Fontname, Fontsize\nStyle: Default,KaiTi,56\n[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:00.00,0:00:03.00,Default,中文字幕\n`,
+          { headers: { 'content-type': 'text/plain' } },
+        )
       if (
         parsed.pathname.endsWith('/stream') ||
         parsed.pathname.endsWith('/stream.mp4') ||
@@ -717,6 +724,30 @@ describe('媒体库网络契约', () => {
     playback.close(shifted.token)
     expect((await playback.subtitle(shifted.token, 2)).status).toBe(403)
   })
+  for (const format of ['ass', 'ssa'] as const)
+    it(`VLC 请求 ${format.toUpperCase()} 时保留原字体，浏览器仍取 WebVTT，拒绝错误格式与失效会话`, async () => {
+      const f = await fixture()
+      f.item.MediaSources[0]!.MediaStreams[0]!.Codec = format
+      const playback = new MediaPlayback(f.client)
+      const session = (await playback.open('v1', 's1', 0, false, true))!
+      const native = await playback.subtitle(session.token, 2, format)
+      expect(native.status).toBe(200)
+      expect(await native.text()).toContain('Style: Default,KaiTi,56')
+      expect(f.calls.at(-1)?.url.pathname).toBe(`/emby/Videos/v1/s1/Subtitles/2/Stream.${format}`)
+      expect((await playback.subtitle(session.token, 2)).headers.get('content-type')).toContain(
+        'text/vtt',
+      )
+      const count = f.calls.length
+      expect(
+        (await playback.subtitle(session.token, 2, format === 'ass' ? 'ssa' : 'ass')).status,
+      ).toBe(404)
+      expect((await playback.subtitle(session.token, 3, format)).status).toBe(404)
+      expect(f.calls).toHaveLength(count)
+      f.mode('样式丢失')
+      expect((await playback.subtitle(session.token, 2, format)).status).toBe(502)
+      playback.close()
+      expect((await playback.subtitle(session.token, 2, format)).status).toBe(403)
+    })
   it('播放失败记录响应与播放器错误，不记录令牌和媒体路径', async () => {
     const f = await fixture()
     const log = new MediaPlaybackLog(f.root)

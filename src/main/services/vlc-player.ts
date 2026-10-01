@@ -15,7 +15,7 @@ import {
   type VlcState,
 } from '../../shared/vlc-player'
 import { MediaPlayback } from './media-playback'
-import type { MediaSubtitle } from '../../shared/media-library'
+import { nativeSubtitleFormat, type MediaSubtitle } from '../../shared/media-library'
 
 export type VlcWindow = { handle: string; width: number; height: number; scale: number }
 type Options = {
@@ -217,7 +217,7 @@ export class VlcPlayer {
         .map((track) => ({
           ...track,
           index: 100000 + track.index,
-          name: `${track.name}（服务器字幕）`,
+          name: `${track.name}（服务器字幕${nativeSubtitleFormat(track.codec) === 'vtt' ? '' : '，保留样式'}）`,
         }))
       const server = createServer(async (incoming, outgoing) => {
         if (
@@ -232,16 +232,27 @@ export class VlcPlayer {
         }
         const url = new URL(incoming.url, `http://127.0.0.1:${active.port}`)
         const prefix = `/${active.secret}/`
-        const subtitle = new RegExp(`^/${active.secret}/subtitles/(\\d{1,4})\\.vtt$`).exec(
-          url.pathname,
-        )
-        if (url.search || (url.pathname !== `${prefix}stream` && !subtitle)) {
+        const subtitle = new RegExp(
+          `^/${active.secret}/subtitles/(\\d{1,4})\\.(vtt|ass|ssa)$`,
+        ).exec(url.pathname)
+        const track =
+          subtitle &&
+          session.subtitles.find((track) => track.index === Number(subtitle[1]) && track.isText)
+        if (
+          url.search ||
+          (url.pathname !== `${prefix}stream` && !subtitle) ||
+          (subtitle && (!track || subtitle[2] !== nativeSubtitleFormat(track.codec)))
+        ) {
           outgoing.writeHead(403).end()
           return
         }
         try {
           const response = subtitle
-            ? await this.playback.subtitle(session.token, Number(subtitle[1]))
+            ? await this.playback.subtitle(
+                session.token,
+                Number(subtitle[1]),
+                nativeSubtitleFormat(track!.codec),
+              )
             : await this.playback.response(
                 new Request(session.url, {
                   method: incoming.method,
@@ -397,10 +408,11 @@ export class VlcPlayer {
       )
         throw new Error('VLC 字幕轨道不可用。')
       active.subtitleChoice = request.index
-      if (request.index !== null && active.tracks.some((track) => track.index === request.index))
+      const track = active.tracks.find((track) => track.index === request.index)
+      if (request.index !== null && track)
         this.send(active, {
           action: 'subtitle-url',
-          url: `http://127.0.0.1:${active.port}/${active.secret}/subtitles/${request.index - 100000}.vtt`,
+          url: `http://127.0.0.1:${active.port}/${active.secret}/subtitles/${request.index - 100000}.${nativeSubtitleFormat(track.codec)}`,
         })
       else this.send(active, request)
     } else this.send(active, request)

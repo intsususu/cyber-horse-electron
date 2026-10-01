@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import type { EmbyClient } from './emby-client'
-import type { MediaPlaybackSession, MediaSubtitle } from '../../shared/media-library'
+import {
+  nativeSubtitleFormat,
+  type MediaPlaybackSession,
+  type MediaSubtitle,
+  type MediaSubtitleFormat,
+} from '../../shared/media-library'
 import type { MediaPlaybackLog } from './media-playback-log'
 
 type Playback = {
@@ -117,11 +122,16 @@ export class MediaPlayback {
     this.current = null
   }
 
-  async subtitle(token: string, index: number): Promise<Response> {
+  async subtitle(
+    token: string,
+    index: number,
+    format: MediaSubtitleFormat = 'vtt',
+  ): Promise<Response> {
     const playback = this.current
     if (!playback || playback.token !== token || playback.expires < Date.now())
       return new Response('播放地址已失效。', { status: 403 })
-    if (!playback.subtitles.some((track) => track.index === index && track.isText))
+    const track = playback.subtitles.find((track) => track.index === index && track.isText)
+    if (!track || (format !== 'vtt' && format !== nativeSubtitleFormat(track.codec)))
       return new Response('字幕轨道不可用。', { status: 404 })
     try {
       const data = await this.client.subtitle(
@@ -131,17 +141,19 @@ export class MediaPlayback {
         playback.direct ? 0 : playback.startSeconds,
         playback.controller.signal,
         playback.generation,
+        format,
       )
       void this.log
         ?.record('字幕响应', {
           diagnosticId: playback.diagnosticId,
           index,
+          format,
           bytes: data.length,
         })
         .catch(() => {})
       return new Response(new Uint8Array(data), {
         headers: {
-          'Content-Type': 'text/vtt; charset=utf-8',
+          'Content-Type': `${format === 'vtt' ? 'text/vtt' : 'text/plain'}; charset=utf-8`,
           'Cache-Control': 'no-store',
           'X-Content-Type-Options': 'nosniff',
         },
