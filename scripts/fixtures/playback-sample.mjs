@@ -1,6 +1,6 @@
 // 在隔离桌面中编码纯色测试画面，不读取或保存真实媒体。
-export async function playbackSample(page) {
-  const frames = await page.evaluate(async () => {
+export async function playbackSample(page, { frameRate = 1 } = {}) {
+  const frames = await page.evaluate(async (frameRate) => {
     const canvas = document.createElement('canvas')
     canvas.width = 320
     canvas.height = 180
@@ -17,16 +17,25 @@ export async function playbackSample(page) {
         failure = error
       },
     })
-    encoder.configure({ codec: 'vp8', width: 320, height: 180, bitrate: 64000, framerate: 1 })
-    for (let i = 0; i < 90; i++) {
+    encoder.configure({
+      codec: 'vp8',
+      width: 320,
+      height: 180,
+      bitrate: 64000,
+      framerate: frameRate,
+    })
+    for (let i = 0; i < 90 * frameRate; i++) {
       context.fillStyle = '#25342f'
       context.fillRect(0, 0, 320, 180)
       context.fillStyle = '#e5ede8'
       context.font = '20px sans-serif'
       context.fillText('播放交互测试', 90, 82)
       context.font = '16px sans-serif'
-      context.fillText(`${i} / 90 秒`, 120, 115)
-      const frame = new VideoFrame(canvas, { timestamp: i * 1000000, duration: 1000000 })
+      context.fillText(`${Math.floor(i / frameRate)} / 90 秒`, 120, 115)
+      const frame = new VideoFrame(canvas, {
+        timestamp: Math.round((i * 1000000) / frameRate),
+        duration: Math.round(1000000 / frameRate),
+      })
       encoder.encode(frame, { keyFrame: true })
       frame.close()
     }
@@ -34,7 +43,7 @@ export async function playbackSample(page) {
     encoder.close()
     if (failure) throw failure
     return chunks
-  })
+  }, frameRate)
   const size = (value) => {
     for (let length = 1; length <= 6; length++) {
       if (value < 2 ** (7 * length) - 1) {
@@ -90,7 +99,7 @@ export async function playbackSample(page) {
   const clusters = frames.map((frame, index) =>
     element(
       '1f43b675',
-      number('e7', index * 1000),
+      number('e7', Math.round((index * 1000) / frameRate)),
       element('a3', Buffer.from([0x81, 0, 0, 0x80]), Buffer.from(frame)),
     ),
   )
@@ -98,7 +107,7 @@ export async function playbackSample(page) {
   const cues = clusters.map((cluster, index) => {
     const cue = element(
       'bb',
-      number('b3', index * 1000),
+      number('b3', Math.round((index * 1000) / frameRate)),
       element('b7', number('f7', 1), number('f1', position)),
     )
     position += cluster.length

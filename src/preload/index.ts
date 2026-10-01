@@ -3,6 +3,11 @@ import type { DesktopApi } from '../shared/contracts'
 import { channels } from '../shared/channels'
 
 const api: DesktopApi = {
+  getVlcAvailability: () => ipcRenderer.invoke(channels.getVlcAvailability),
+  openVlcPlayback: (request) => ipcRenderer.invoke(channels.openVlcPlayback, request),
+  controlVlcPlayback: (request) => ipcRenderer.invoke(channels.controlVlcPlayback, request),
+  getVlcPlayback: (token) => ipcRenderer.invoke(channels.getVlcPlayback, token),
+  closeVlcPlayback: (token) => ipcRenderer.invoke(channels.closeVlcPlayback, token),
   getShutdownState: () => ipcRenderer.invoke(channels.getShutdownState),
   startShutdown: (request) => ipcRenderer.invoke(channels.startShutdown, request),
   cancelShutdown: () => ipcRenderer.invoke(channels.cancelShutdown),

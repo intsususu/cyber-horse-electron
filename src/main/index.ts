@@ -44,6 +44,8 @@ import { MediaPopularService } from './services/media-popular'
 import { MediaProcessService } from './services/media-process'
 import { MediaPlayback } from './services/media-playback'
 import { MediaPlaybackLog } from './services/media-playback-log'
+import { VlcPlayer } from './services/vlc-player'
+import { registerVlcIpc } from './vlc-ipc'
 import { ExecutionRecords } from './services/execution-records'
 import { executionRecordSchema } from '../shared/execution-record'
 import {
@@ -97,6 +99,7 @@ let mediaPopular: MediaPopularService
 let mediaDownloads: MediaDownloads
 let mediaProcesses: MediaProcessService
 let mediaPlayback: MediaPlayback
+let vlcPlayer: VlcPlayer
 let workspaceTasks: WorkspaceTasks
 let subtitlePreview: SubtitlePreviewService
 let shutdown: ShutdownService
@@ -213,6 +216,8 @@ function createWindow(): void {
   })
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
+  mainWindow.webContents.on('render-process-gone', () => vlcPlayer.close())
+  mainWindow.webContents.on('did-start-loading', () => vlcPlayer.close())
   // 首帧可绘制不代表配置已恢复；两者都完成后只显示一次，避免闪过默认主题。
   const window = mainWindow
   let painted = false
@@ -247,6 +252,7 @@ function createWindow(): void {
     stopWatchingSettings = undefined
     performanceMonitor.stop()
     mediaPlayback.close()
+    vlcPlayer.close()
     mediaClient.invalidate()
     selectedInputDirectory = null
     mainWindow = null
@@ -433,6 +439,22 @@ void app.whenReady().then(async () => {
     if (await shell.openPath(path)) throw new Error('无法打开任务目录。')
   })
   mediaPlayback = new MediaPlayback(mediaClient, new MediaPlaybackLog(app.getPath('userData')))
+  vlcPlayer = new VlcPlayer(
+    new MediaPlayback(mediaClient, new MediaPlaybackLog(app.getPath('userData'))),
+    {
+      helper: app.isPackaged
+        ? join(process.resourcesPath, 'vlc-host/vlc-host.exe')
+        : join(app.getAppPath(), 'out/native/vlc-host.exe'),
+      onInput: (key) => {
+        if (!mainWindow || mainWindow.isDestroyed()) return
+        mainWindow.webContents.focus()
+        if (key !== 'focus') {
+          mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode: key })
+          mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode: key })
+        }
+      },
+    },
+  )
   mediaDownloads = new MediaDownloads(
     app.getPath('userData'),
     [...protectedPaths, app.getPath('userData')],
@@ -516,7 +538,9 @@ void app.whenReady().then(async () => {
     workspaceTasks,
     mediaPopular,
     runTask,
+    () => vlcPlayer.close(),
   )
+  registerVlcIpc(vlcPlayer, settingsStore, mediaPlayback, () => mainWindow, validateSender)
   ipcMain.handle(channels.previewPipeline, async (event, value: unknown) => {
     validateSender(event)
     const parsed = pipelinePreviewSchema.safeParse(value)

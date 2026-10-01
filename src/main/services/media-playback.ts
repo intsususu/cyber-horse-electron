@@ -33,6 +33,7 @@ export class MediaPlayback {
     sourceId: string,
     startSeconds: number,
     transcode: boolean,
+    native = false,
   ): Promise<MediaPlaybackSession | null> {
     const revision = ++this.revision
     const diagnosticId = randomUUID().slice(0, 8)
@@ -49,7 +50,10 @@ export class MediaPlayback {
     const source = detail.sources.find((value) => value.id === sourceId)
     if (!source) throw new Error('所选媒体版本已不存在。')
     const direct =
-      !transcode && ['mp4', 'm4v', 'webm', 'mkv'].includes(source.container.toLowerCase())
+      !transcode &&
+      (native || ['mp4', 'm4v', 'webm', 'mkv'].includes(source.container.toLowerCase()))
+    if (native && !/^[a-z0-9]{1,12}$/.test(source.container.toLowerCase()))
+      throw new Error('视频容器无效，无法交给 VLC 播放。')
     this.close()
     const token = randomUUID()
     this.current = {
@@ -190,10 +194,7 @@ export class MediaPlayback {
           contentRange: Boolean(upstream.headers.get('content-range')),
         })
         .catch(() => {})
-      if (
-        !type ||
-        !['video/mp4', 'video/webm', 'video/x-matroska', 'application/octet-stream'].includes(type)
-      ) {
+      if (!type || !(type.startsWith('video/') || type === 'application/octet-stream')) {
         await upstream.body?.cancel()
         return new Response('服务器未返回可播放的视频流。', { status: 502 })
       }

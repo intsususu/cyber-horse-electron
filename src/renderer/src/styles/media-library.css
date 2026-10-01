@@ -740,6 +740,29 @@
   width: 100%;
   height: 100%;
 }
+/* 原生视频与公共控件分区，避免 Windows 子窗口遮挡返回、菜单和提示。 */
+.media-player-vlc {
+  display: flex;
+  flex-direction: column;
+}
+.media-player-vlc .media-player-heading,
+.media-player-vlc .media-player-controls {
+  position: relative;
+  inset: auto;
+  flex-shrink: 0;
+  opacity: 1;
+}
+.media-player-vlc .media-player-heading {
+  padding-bottom: 14px;
+}
+.media-player-vlc .media-player-controls {
+  padding-top: 12px;
+}
+.vlc-video-surface {
+  flex: 1;
+  min-height: 0;
+  background: var(--player-bg);
+}
 .media-video {
   display: block;
   width: 100%;

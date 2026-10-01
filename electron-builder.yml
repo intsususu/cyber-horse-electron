@@ -8,6 +8,10 @@ files:
   - config/default-settings.json
   - assets/**/*
 asar: true
+extraResources:
+  - from: out/native
+    to: vlc-host
+    filter: [vlc-host.exe]
 afterPack: scripts/verify-packaged-assets.cjs
 win:
   icon: assets/icon.ico

@@ -9,6 +9,21 @@ import { reconcileSettingsDraft } from '../src/renderer/src/lib/settings-draft'
 import { settingsSaveError } from '../src/renderer/src/lib/settings-errors'
 
 describe('本地配置和文件保护', () => {
+  it('VLC 选择和默认静音可保存，旧播放器配置补齐关闭状态', async () => {
+    const folder = await mkdtemp(join(tmpdir(), 'cyber-horse-test-'))
+    await writeFile(
+      join(folder, 'settings.json'),
+      JSON.stringify({ ...defaultSettings, player: { startMuted: false } }),
+    )
+    const store = new SettingsStore(folder)
+    const previous = (await store.load()).settings
+    expect(previous.player).toEqual({ startMuted: false, useVlc: false })
+    await store.save({ ...previous, player: { ...previous.player, useVlc: true } })
+    expect((await new SettingsStore(folder).load()).settings.player).toEqual({
+      startMuted: false,
+      useVlc: true,
+    })
+  })
   it('旧后台拒绝新增字段时提示完整重启，正确网站地址可以保存并恢复', async () => {
     const next = structuredClone(defaultSettings)
     next.mediaServer.javbusUrl = 'https://www.javbus.com'
@@ -74,7 +89,10 @@ describe('本地配置和文件保护', () => {
     expect(restored.paths).not.toHaveProperty('mdcLogDirectory')
     expect(restored.player.startMuted).toBe(true)
     expect(JSON.parse(await readFile(join(folder, 'settings.json'), 'utf8'))).toEqual(restored)
-    await new SettingsStore(folder).save({ ...restored, player: { startMuted: false } })
+    await new SettingsStore(folder).save({
+      ...restored,
+      player: { ...restored.player, startMuted: false },
+    })
     expect((await new SettingsStore(folder).load()).settings.player.startMuted).toBe(false)
   })
   it('版本 1 的设置自动升级并保留已保存的主题和路径', async () => {

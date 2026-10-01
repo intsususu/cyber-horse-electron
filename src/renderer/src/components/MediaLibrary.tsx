@@ -11,6 +11,7 @@ import { MediaShelf } from './MediaShelf'
 import { MediaContextMenu, type MediaContextState } from './MediaContextMenu'
 import { MediaDeleteConfirmation } from './MediaDeleteConfirmation'
 import { Cover, MediaVideoCard } from './MediaVideoCard'
+import { VlcMediaPlayer } from './VlcMediaPlayer'
 import '../styles/media-library.css'
 
 export function MediaLibrary({
@@ -43,6 +44,8 @@ export function MediaLibrary({
     id: string
     sourceId: string
     startSeconds: number
+    useVlc: boolean
+    startMuted: boolean
   } | null>(null)
   const playTrigger = useRef<HTMLElement | null>(null)
   const { view, busy, action, visible } = library
@@ -70,7 +73,13 @@ export function MediaLibrary({
   const play = (startSeconds = 0) => {
     if (!selectedSource || busy || action) return
     playTrigger.current = document.activeElement as HTMLElement | null
-    setPlayback({ id: detailId, sourceId: selectedSource.id, startSeconds })
+    setPlayback({
+      id: detailId,
+      sourceId: selectedSource.id,
+      startSeconds,
+      useVlc: workspace.settings.player.useVlc,
+      startMuted: workspace.settings.player.startMuted,
+    })
   }
   const closePlayback = () => {
     setPlayback(null)
@@ -537,16 +546,27 @@ export function MediaLibrary({
           )}
         </div>
       </div>
-      {playing && playback && view?.kind === 'detail' && (
-        <MediaPlayer
-          key={`${playback.id}:${playback.sourceId}`}
-          detail={view.detail}
-          sourceId={playback.sourceId}
-          startSeconds={playback.startSeconds}
-          startMuted={workspace.settings.player.startMuted}
-          onClose={closePlayback}
-        />
-      )}
+      {playing &&
+        playback &&
+        view?.kind === 'detail' &&
+        (playback.useVlc ? (
+          <VlcMediaPlayer
+            key={`vlc:${playback.id}:${playback.sourceId}`}
+            detail={view.detail}
+            sourceId={playback.sourceId}
+            startSeconds={playback.startSeconds}
+            onClose={closePlayback}
+          />
+        ) : (
+          <MediaPlayer
+            key={`${playback.id}:${playback.sourceId}`}
+            detail={view.detail}
+            sourceId={playback.sourceId}
+            startSeconds={playback.startSeconds}
+            startMuted={playback.startMuted}
+            onClose={closePlayback}
+          />
+        ))}
       {contextMenu && active && !playing && (
         <MediaContextMenu
           key={contextMenu.request}

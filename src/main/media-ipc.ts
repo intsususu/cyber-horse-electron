@@ -31,6 +31,7 @@ export function registerMediaIpc(
   workspaceTasks?: WorkspaceTasks,
   popular?: MediaPopularService,
   runTask: <T>(action: () => T | Promise<T>) => Promise<T> = async (action) => action(),
+  closeNativePlayback: () => void = () => {},
 ) {
   const bind = <T>(channel: string, schema: z.ZodType<T>, action: (value: T) => unknown) => {
     ipcMain.handle(channel, async (event, ...args: unknown[]) => {
@@ -64,9 +65,10 @@ export function registerMediaIpc(
       throw new Error('无法打开浏览器，请检查系统默认浏览器设置。')
     }
   })
-  bind(channels.openMediaPlayback, mediaPlaybackSchema, (request) =>
-    playback.open(request.id, request.sourceId, request.startSeconds, request.transcode),
-  )
+  bind(channels.openMediaPlayback, mediaPlaybackSchema, (request) => {
+    closeNativePlayback()
+    return playback.open(request.id, request.sourceId, request.startSeconds, request.transcode)
+  })
   bind(channels.closeMediaPlayback, z.string().uuid(), (token) => playback.close(token))
   bind(channels.reportMediaPlaybackError, mediaPlaybackErrorSchema, (request) =>
     playback.reportError(request),

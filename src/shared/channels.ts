@@ -1,4 +1,9 @@
 export const channels = {
+  getVlcAvailability: 'vlc:availability',
+  openVlcPlayback: 'vlc:open',
+  controlVlcPlayback: 'vlc:control',
+  getVlcPlayback: 'vlc:state',
+  closeVlcPlayback: 'vlc:close',
   windowReady: 'window:ready',
   getShutdownState: 'shutdown:state',
   startShutdown: 'shutdown:start',

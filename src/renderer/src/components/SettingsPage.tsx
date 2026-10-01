@@ -35,6 +35,22 @@ export function SettingsPage({ workspace, target }: { workspace: Workspace; targ
   const [saveError, setSaveError] = useState('')
   const [previewTarget, setPreviewTarget] = useState<HTMLDivElement | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [vlcStatus, setVlcStatus] = useState('检测后确认本机 VLC 安装状态。')
+  const [checkingVlc, setCheckingVlc] = useState(false)
+  const checkVlc = async () => {
+    if (!window.cyberHorse?.getVlcAvailability) {
+      setVlcStatus('请使用更新并完整重启后的桌面应用。')
+      return
+    }
+    setCheckingVlc(true)
+    try {
+      setVlcStatus((await window.cyberHorse.getVlcAvailability()).message)
+    } catch {
+      setVlcStatus('无法检查 VLC 安装，请重试。')
+    } finally {
+      setCheckingVlc(false)
+    }
+  }
   useEffect(() => {
     if (target) {
       const input = document.getElementById(`path-${target}`)
@@ -315,6 +331,35 @@ export function SettingsPage({ workspace, target }: { workspace: Workspace; targ
               </p>
               <div className="preference-group">
                 <h2>播放器</h2>
+                <label className="preference-check">
+                  <input
+                    type="checkbox"
+                    checked={draft.player.useVlc}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        player: { ...current.player, useVlc: event.target.checked },
+                      }))
+                    }
+                  />
+                  使用 VLC 内嵌播放
+                </label>
+                <p className="preference-hint">
+                  保存后对下一次媒体库播放生效。需安装 VLC 3.x 64 位版本，当前支持
+                  Windows；关闭此选项使用默认播放器。
+                </p>
+                <div className="preference-actions">
+                  <button
+                    className="secondary-button"
+                    disabled={checkingVlc}
+                    onClick={() => void checkVlc()}
+                  >
+                    {checkingVlc ? '正在检测…' : '检测 VLC'}
+                  </button>
+                </div>
+                <p className="preference-hint" role="status">
+                  {vlcStatus}
+                </p>
                 <label className="preference-check">
                   <input
                     type="checkbox"

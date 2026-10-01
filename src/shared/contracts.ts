@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { VlcPlayerApi } from './vlc-player'
 import type { SubtitlePreviewRequest, SubtitlePreviewResult } from './subtitle-preview'
 import { subtitleStyleSchema, defaultSubtitleStyle } from './subtitle-style'
 import { javbusUrlSchema } from './media-links'
@@ -71,7 +72,10 @@ export const settingsSchema = z
     theme: themeSchema,
     paths: pathsSchema,
     subtitle: subtitleStyleSchema.extend({ format: z.enum(['srt', 'ass']) }),
-    player: z.object({ startMuted: z.boolean() }).strict().default({ startMuted: true }),
+    player: z
+      .object({ startMuted: z.boolean(), useVlc: z.boolean().default(false) })
+      .strict()
+      .default({ startMuted: true, useVlc: false }),
     mediaServer: z
       .object({
         serverUrl: serverUrlSchema,
@@ -97,7 +101,7 @@ export const defaultSettings: Settings = {
     ...(Object.fromEntries(pathKeys.map((key) => [key, ''])) as Record<PathKey, string>),
   },
   subtitle: { ...defaultSubtitleStyle, format: 'srt' },
-  player: { startMuted: true },
+  player: { startMuted: true, useVlc: false },
   mediaServer: { serverUrl: '', username: '', downloadDirectory: '', javbusUrl: '' },
   privacyCover: { posterPath: '', thumbPath: '', defaultEyeOpen: true },
 }
@@ -178,7 +182,8 @@ export type PerformanceSnapshot = {
     interfaces: string[]
   }
 }
-export interface DesktopApi extends MediaLibraryApi, MediaPopularApi, TaskApi, ShutdownApi {
+export interface DesktopApi
+  extends MediaLibraryApi, MediaPopularApi, TaskApi, ShutdownApi, VlcPlayerApi {
   generateSubtitlePreview(request: SubtitlePreviewRequest): Promise<SubtitlePreviewResult>
   cancelSubtitlePreview(request: { id: string }): Promise<void>
   openExecutionRecord(request: ExecutionRecordRequest): Promise<void>
